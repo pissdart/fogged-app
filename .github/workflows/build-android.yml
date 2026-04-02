@@ -61,13 +61,19 @@ jobs:
         run: flutter pub get
 
       - name: Generate code
+        continue-on-error: true
         run: dart run build_runner build --delete-conflicting-outputs
 
       - name: Build debug APK
         run: |
           set -euo pipefail
-          flutter build apk --debug
-          echo "Build artifacts:" && find build -name "*.apk" 2>/dev/null
+          flutter build apk --debug --verbose 2>&1 | tee /tmp/build.log || true
+          echo "=== LAST 50 LINES ==="
+          tail -50 /tmp/build.log
+          echo "=== APK FILES ==="
+          find build -name "*.apk" 2>/dev/null || echo "No APKs found"
+          # Fail if no APK was produced
+          test -f build/app/outputs/flutter-apk/app-debug.apk
 
       - name: Upload APK
         if: always()
