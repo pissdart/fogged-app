@@ -35,16 +35,6 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Verify tools
-        run: |
-          echo "=== Flutter ==="
-          flutter --version
-          echo "=== Java ==="
-          java -version
-          echo "=== Android SDK ==="
-          echo $ANDROID_HOME
-          ls $ANDROID_HOME/platforms/ 2>/dev/null || echo "No platforms"
-
       - name: Download core library
         run: |
           set -e
@@ -52,7 +42,6 @@ jobs:
           echo "Core version: $CORE_VERSION"
           mkdir -p android/app/libs
           curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-android.tar.gz" -o /tmp/core.tar.gz
-          ls -lh /tmp/core.tar.gz
           tar xzf /tmp/core.tar.gz -C android/app/libs/
           ls -la android/app/libs/
 
@@ -62,27 +51,19 @@ jobs:
           mkdir -p assets/core
           curl -fSL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db
           curl -fSL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db
-          ls -la assets/core/
 
       - name: Flutter pub get
         run: flutter pub get
 
       - name: Generate code
-        continue-on-error: true
         run: dart run build_runner build --delete-conflicting-outputs
 
       - name: Build debug APK
-        run: |
-          flutter build apk --debug 2>&1
-          find build -name "*.apk" -ls
+        run: flutter build apk --debug
 
       - name: Upload APK
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fogged-vpn-android
-          path: |
-            build/app/outputs/flutter-apk/*.apk
-            build/app/outputs/apk/**/*.apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
           retention-days: 30
-          if-no-files-found: warn
