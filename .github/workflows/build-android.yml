@@ -4,10 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - 'lib/**'
-      - 'android/**'
-      - 'pubspec.yaml'
 
 jobs:
   build:
@@ -27,15 +23,40 @@ jobs:
           flutter-version: '3.38.5'
           channel: 'stable'
 
-      - name: Install dependencies
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler gcc make curl unzip
+
+      - name: Download Hiddify Core (Android)
+        run: |
+          CORE_VERSION=$(cat dependencies.properties | grep core.version | cut -d= -f2)
+          mkdir -p android/app/libs
+          curl -sL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-core-android-arm64.aar.gz" | gunzip > android/app/libs/hiddify-core-arm64-v8a.aar || true
+          curl -sL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-core-android-arm.aar.gz" | gunzip > android/app/libs/hiddify-core-armeabi-v7a.aar || true
+          curl -sL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-core-android-amd64.aar.gz" | gunzip > android/app/libs/hiddify-core-x86_64.aar || true
+          ls -la android/app/libs/ || true
+
+      - name: Download geo assets
+        run: |
+          mkdir -p assets/core
+          curl -sL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db || true
+          curl -sL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db || true
+
+      - name: Install Flutter dependencies
         run: flutter pub get
 
+      - name: Generate code
+        run: |
+          dart run build_runner build --delete-conflicting-outputs || true
+
       - name: Build APK
-        run: flutter build apk --release
+        run: flutter build apk --release --split-per-abi || flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: fogged-vpn-android
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: |
+            build/app/outputs/flutter-apk/*.apk
           retention-days: 30
