@@ -58,6 +58,9 @@ jobs:
       - name: Generate code
         run: dart run build_runner build --delete-conflicting-outputs
 
+      - name: Analyze for errors
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings 2>&1 | tail -30 || true
+
       - name: Build debug APK
         run: flutter build apk --debug
 
