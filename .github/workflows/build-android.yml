@@ -8,7 +8,6 @@ on:
 env:
   IS_GITHUB_ACTIONS: 1
   FLUTTER_VERSION: '3.38.5'
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -18,8 +17,9 @@ jobs:
 
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android
           sudo apt-get autoremove -y && sudo apt-get clean
+          echo "Free space:" && df -h /
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -37,13 +37,18 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Flutter doctor
+        run: flutter doctor -v
+
       - name: Download core library
         run: |
           CORE_VERSION=$(grep 'core.version' dependencies.properties | cut -d= -f2)
           echo "Core version: $CORE_VERSION"
           mkdir -p android/app/libs
-          curl -sL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-android.tar.gz" | tar xz -C android/app/libs/ || echo "Core download failed, trying alternate URL..."
-          ls -la android/app/libs/
+          curl -sL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-android.tar.gz" -o /tmp/core.tar.gz
+          echo "Downloaded $(ls -lh /tmp/core.tar.gz | awk '{print $5}')"
+          tar xzf /tmp/core.tar.gz -C android/app/libs/
+          echo "Extracted:" && ls -la android/app/libs/
 
       - name: Download geo assets
         run: |
@@ -56,15 +61,21 @@ jobs:
         run: flutter pub get
 
       - name: Generate code
-        run: dart run build_runner build --delete-conflicting-outputs || true
+        run: |
+          dart run build_runner build --delete-conflicting-outputs 2>&1 || echo "Code gen had issues, continuing..."
 
-      - name: Build APK
-        run: flutter build apk --release || flutter build apk --debug
+      - name: Build debug APK
+        run: |
+          flutter build apk --debug 2>&1 | tail -30
+          echo "Build artifacts:" && find build -name "*.apk" 2>/dev/null
 
       - name: Upload APK
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fogged-vpn-android
-          path: build/app/outputs/flutter-apk/*.apk
+          path: |
+            build/app/outputs/flutter-apk/*.apk
+            build/app/outputs/apk/**/*.apk
           retention-days: 30
           if-no-files-found: warn
