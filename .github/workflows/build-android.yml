@@ -6,7 +6,6 @@ on:
     branches: [main]
 
 env:
-  IS_GITHUB_ACTIONS: 1
   FLUTTER_VERSION: '3.38.5'
 
 jobs:
@@ -17,9 +16,8 @@ jobs:
 
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android
-          sudo apt-get autoremove -y && sudo apt-get clean
-          echo "Free space:" && df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -37,24 +35,33 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Flutter doctor
-        run: flutter doctor -v
+      - name: Verify tools
+        run: |
+          echo "=== Flutter ==="
+          flutter --version
+          echo "=== Java ==="
+          java -version
+          echo "=== Android SDK ==="
+          echo $ANDROID_HOME
+          ls $ANDROID_HOME/platforms/ 2>/dev/null || echo "No platforms"
 
       - name: Download core library
         run: |
+          set -e
           CORE_VERSION=$(grep 'core.version' dependencies.properties | cut -d= -f2)
           echo "Core version: $CORE_VERSION"
           mkdir -p android/app/libs
-          curl -sL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-android.tar.gz" -o /tmp/core.tar.gz
-          echo "Downloaded $(ls -lh /tmp/core.tar.gz | awk '{print $5}')"
+          curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-android.tar.gz" -o /tmp/core.tar.gz
+          ls -lh /tmp/core.tar.gz
           tar xzf /tmp/core.tar.gz -C android/app/libs/
-          echo "Extracted:" && ls -la android/app/libs/
+          ls -la android/app/libs/
 
       - name: Download geo assets
         run: |
+          set -e
           mkdir -p assets/core
-          curl -sL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db
-          curl -sL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db
+          curl -fSL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db
+          curl -fSL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db
           ls -la assets/core/
 
       - name: Flutter pub get
@@ -66,14 +73,8 @@ jobs:
 
       - name: Build debug APK
         run: |
-          set -euo pipefail
-          flutter build apk --debug --verbose 2>&1 | tee /tmp/build.log || true
-          echo "=== LAST 50 LINES ==="
-          tail -50 /tmp/build.log
-          echo "=== APK FILES ==="
-          find build -name "*.apk" 2>/dev/null || echo "No APKs found"
-          # Fail if no APK was produced
-          test -f build/app/outputs/flutter-apk/app-debug.apk
+          flutter build apk --debug 2>&1
+          find build -name "*.apk" -ls
 
       - name: Upload APK
         if: always()
