@@ -45,9 +45,9 @@ IOS_OUT=ios$(SEP)Frameworks
 DESKTOP_OUT=fogged-core$(SEP)bin
 GEO_ASSETS_DIR=assets$(SEP)core
 
-CORE_PRODUCT_NAME=fogged-core
-CORE_NAME=fogged-lib
-LIB_NAME=fogged-core
+CORE_PRODUCT_NAME=hiddify-core
+CORE_NAME=hiddify-lib
+LIB_NAME=hiddify-core
 
 ifeq ($(CHANNEL),prod)
 	CORE_URL=https://github.com/hiddify/hiddify-next-core/releases/download/v$(core.version)
