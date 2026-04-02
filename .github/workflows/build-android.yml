@@ -5,11 +5,21 @@ on:
   push:
     branches: [main]
 
+env:
+  IS_GITHUB_ACTIONS: 1
+  CHANNEL: "dev"
+  FLUTTER_VERSION: '3.38.5'
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get autoremove -y && sudo apt-get clean
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -17,41 +27,24 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.38.5'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
+          cache: true
 
-      - name: Install system dependencies
+      - name: Install deps and prepare
         run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler gcc make curl unzip
-
-      - name: Download Hiddify Core (Android)
-        run: |
-          CORE_VERSION=$(cat dependencies.properties | grep core.version | cut -d= -f2)
-          mkdir -p android/app/libs
-          curl -sL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-core-android-arm64.aar.gz" | gunzip > android/app/libs/hiddify-core-arm64-v8a.aar || true
-          curl -sL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-core-android-arm.aar.gz" | gunzip > android/app/libs/hiddify-core-armeabi-v7a.aar || true
-          curl -sL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-core-android-amd64.aar.gz" | gunzip > android/app/libs/hiddify-core-x86_64.aar || true
-          ls -la android/app/libs/ || true
-
-      - name: Download geo assets
-        run: |
-          mkdir -p assets/core
-          curl -sL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db || true
-          curl -sL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db || true
-
-      - name: Install Flutter dependencies
-        run: flutter pub get
-
-      - name: Generate code
-        run: |
-          dart run build_runner build --delete-conflicting-outputs || true
+          make android-apk-install-deps || true
+          make android-apk-prepare || true
 
       - name: Build APK
-        run: flutter build apk --release --split-per-abi || flutter build apk --release
+        run: |
+          make android-apk-release || flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -59,4 +52,5 @@ jobs:
           name: fogged-vpn-android
           path: |
             build/app/outputs/flutter-apk/*.apk
+            out/*.apk
           retention-days: 30
