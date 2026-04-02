@@ -91,9 +91,7 @@ dependencies:
   # flutter_easy_permission:
   #   git: https://github.com/MichaelStH/flutter_easy_permission.git
   in_app_review: ^2.0.10
-  # circle_flags: ^4.0.2
-  circle_flags:
-    git: https://github.com/fogged-com/flutter_circle_flags.git
+  circle_flags: ^4.0.2
   fixnum: ^1.1.0
   grpc: ^4.0.1
   bottom_navy_bar: ^6.1.0
