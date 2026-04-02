@@ -19,8 +19,8 @@ install_integration() {
         REAL_HOME="$HOME"
     fi
 
-    APP_NAME="hiddify"
-    TARGET_DESKTOP="$REAL_HOME/.local/share/applications/hiddify.desktop"
+    APP_NAME="fogged"
+    TARGET_DESKTOP="$REAL_HOME/.local/share/applications/fogged.desktop"
     LOCAL_HICOLOR="$REAL_HOME/.local/share/icons/hicolor"
     
     if [ ! -f "$LOCAL_HICOLOR/index.theme" ]; then
@@ -32,18 +32,18 @@ install_integration() {
         fi
     fi
 
-    if [[ -f "./hiddify.png" ]]; then
+    if [[ -f "./fogged.png" ]]; then
 
         mkdir -p "$LOCAL_HICOLOR/128x128/apps"
-        cp "./hiddify.png" "$LOCAL_HICOLOR/128x128/apps/hiddify.png"
+        cp "./fogged.png" "$LOCAL_HICOLOR/128x128/apps/fogged.png"
         
         mkdir -p "$LOCAL_HICOLOR/256x256/apps"
-        cp "./hiddify.png" "$LOCAL_HICOLOR/256x256/apps/hiddify.png"
+        cp "./fogged.png" "$LOCAL_HICOLOR/256x256/apps/fogged.png"
         
         gtk-update-icon-cache -f -t "$LOCAL_HICOLOR" 2>/dev/null || true
     fi
 
-    if [ -f "/usr/share/applications/hiddify.desktop" ]; then
+    if [ -f "/usr/share/applications/fogged.desktop" ]; then
         return
     fi
 
@@ -54,9 +54,9 @@ install_integration() {
 Type=Application
 Name=Fogged
 Exec="$APPIMAGE"
-Icon=hiddify
+Icon=fogged
 Terminal=false
-StartupWMClass=app.hiddify.com
+StartupWMClass=app.fogged.com
 EOF
 
     chmod +x "$TARGET_DESKTOP"
@@ -82,10 +82,10 @@ OPTIND=1
 # Resetting OPTIND is necessary if getopts was used previously in the script.
 # It is a good idea to make OPTIND local if you process options in a function.
 
-# if no arg is provided, execute hiddify app
+# if no arg is provided, execute fogged app
 if [[ $# == 0 ]];then 
     install_integration
-    exec ./hiddify
+    exec ./fogged
 else
 
 # processing arguments

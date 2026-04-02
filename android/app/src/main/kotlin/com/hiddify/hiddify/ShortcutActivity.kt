@@ -1,4 +1,4 @@
-package com.hiddify.hiddify
+package com.fogged.fogged
 
 import android.app.Activity
 import android.content.Intent
@@ -9,9 +9,9 @@ import androidx.core.content.getSystemService
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
-import com.hiddify.hiddify.bg.BoxService
-import com.hiddify.hiddify.bg.ServiceConnection
-import com.hiddify.hiddify.constant.Status
+import com.fogged.fogged.bg.BoxService
+import com.fogged.fogged.bg.ServiceConnection
+import com.fogged.fogged.constant.Status
 
 class ShortcutActivity : Activity(), ServiceConnection.Callback {
 

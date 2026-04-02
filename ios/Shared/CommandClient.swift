@@ -1,5 +1,5 @@
 import Foundation
-import HiddifyCore
+import FoggedCore
 
 public class CommandClient: ObservableObject {
     public enum ConnectionType {

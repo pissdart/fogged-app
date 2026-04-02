@@ -1,12 +1,12 @@
-package com.hiddify.hiddify
+package com.fogged.fogged
 
 import android.content.Context
 import android.util.Base64
-import com.hiddify.hiddify.bg.ProxyService
-import com.hiddify.hiddify.bg.VPNService
-import com.hiddify.hiddify.constant.PerAppProxyMode
-import com.hiddify.hiddify.constant.ServiceMode
-import com.hiddify.hiddify.constant.SettingsKey
+import com.fogged.fogged.bg.ProxyService
+import com.fogged.fogged.bg.VPNService
+import com.fogged.fogged.constant.PerAppProxyMode
+import com.fogged.fogged.constant.ServiceMode
+import com.fogged.fogged.constant.SettingsKey
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File

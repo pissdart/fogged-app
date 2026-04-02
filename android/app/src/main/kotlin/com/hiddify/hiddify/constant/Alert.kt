@@ -1,4 +1,4 @@
-package com.hiddify.hiddify.constant
+package com.fogged.fogged.constant
 
 enum class Alert {
     RequestVPNPermission,

@@ -4,10 +4,10 @@ project(runner LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-set(BINARY_NAME "hiddify")
+set(BINARY_NAME "fogged")
 # The unique GTK application identifier for this application. See:
 # https://wiki.gnome.org/HowDoI/ChooseApplicationID
-set(APPLICATION_ID "app.hiddify.com")
+set(APPLICATION_ID "app.fogged.com")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
@@ -108,11 +108,11 @@ install(CODE "
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}/lib")
 
-install(FILES "../hiddify-core/bin/lib/hiddify-core.so" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+install(FILES "../fogged-core/bin/lib/fogged-core.so" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 install(
-  FILES "../hiddify-core/bin/FoggedCli" 
+  FILES "../fogged-core/bin/FoggedCli" 
   DESTINATION "${CMAKE_INSTALL_PREFIX}"
   PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
   COMPONENT Runtime

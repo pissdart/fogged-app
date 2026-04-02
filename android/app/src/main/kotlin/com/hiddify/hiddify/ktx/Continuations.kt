@@ -1,4 +1,4 @@
-package com.hiddify.hiddify.ktx
+package com.fogged.fogged.ktx
 
 import kotlin.coroutines.Continuation
 

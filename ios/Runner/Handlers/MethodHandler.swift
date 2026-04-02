@@ -7,7 +7,7 @@
 
 import Flutter
 import Combine
-import HiddifyCore
+import FoggedCore
 
 public class MethodHandler: NSObject, FlutterPlugin {
     
@@ -53,7 +53,7 @@ public class MethodHandler: NSObject, FlutterPlugin {
                 return
             }
             result("")
-        case "change_hiddify_options":
+        case "change_fogged_options":
             guard let options = call.arguments as? String else {
                 result(FlutterError(code: "INVALID_ARGS", message: nil, details: nil))
                 return

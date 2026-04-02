@@ -3,8 +3,8 @@ import "v2/hcommon/common.proto";
 import "google/protobuf/timestamp.proto";
 
 package hcore;
-option go_package = "github.com/hiddify/hiddify-core/v2/hcore";
-option java_package = "com.hiddify.core.api.v2.hcore";
+option go_package = "github.com/fogged/fogged-core/v2/hcore";
+option java_package = "net.fogged.core.api.v2.hcore";
 
 
 enum CoreStates {
@@ -167,8 +167,8 @@ message ParseResponse {
   string message = 3;
 }
 
-message ChangeHiddifySettingsRequest {
-  string hiddify_settings_json = 1;
+message ChangeFoggedSettingsRequest {
+  string fogged_settings_json = 1;
 }
 
 message GenerateConfigRequest {

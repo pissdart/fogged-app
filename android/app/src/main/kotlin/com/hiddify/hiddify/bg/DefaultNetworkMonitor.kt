@@ -1,10 +1,10 @@
-package com.hiddify.hiddify.bg
+package com.fogged.fogged.bg
 
 import android.net.Network
 import android.os.Build
-import com.hiddify.hiddify.Application
-import com.hiddify.core.libbox.InterfaceUpdateListener
-import com.hiddify.hiddify.constant.Bugs
+import com.fogged.fogged.Application
+import com.fogged.core.libbox.InterfaceUpdateListener
+import com.fogged.fogged.constant.Bugs
 
 
 import kotlinx.coroutines.Dispatchers

@@ -1,4 +1,4 @@
-package com.hiddify.hiddify.utils
+package com.fogged.fogged.utils
 
 /*
  * Copyright (C) 2019 Square, Inc.
@@ -16,8 +16,8 @@ package com.hiddify.hiddify.utils
  * limitations under the License.
  */
 
-import com.hiddify.core.api.v2.hcore.CoreClient
-import com.hiddify.hiddify.Settings
+import com.fogged.core.api.v2.hcore.CoreClient
+import com.fogged.fogged.Settings
 import com.squareup.wire.GrpcClient
 import io.grpc.CallOptions
 import io.grpc.ManagedChannelBuilder

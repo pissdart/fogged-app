@@ -1,8 +1,8 @@
-package com.hiddify.hiddify.constant
+package com.fogged.fogged.constant
 
 
 import android.os.Build
-import com.hiddify.hiddify.BuildConfig
+import com.fogged.fogged.BuildConfig
 
 
 object Bugs {

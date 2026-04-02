@@ -1,6 +1,6 @@
-package com.hiddify.hiddify;
+package net.fogged.vpn;
 
-import com.hiddify.hiddify.IServiceCallback;
+import net.fogged.vpn.IServiceCallback;
 
 interface IService {
   int getStatus();

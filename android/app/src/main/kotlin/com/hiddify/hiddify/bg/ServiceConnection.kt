@@ -1,11 +1,11 @@
-package com.hiddify.hiddify.bg
+package com.fogged.fogged.bg
 
-import com.hiddify.hiddify.IService
-import com.hiddify.hiddify.IServiceCallback
-import com.hiddify.hiddify.Settings
-import com.hiddify.hiddify.constant.Action
-import com.hiddify.hiddify.constant.Alert
-import com.hiddify.hiddify.constant.Status
+import com.fogged.fogged.IService
+import com.fogged.fogged.IServiceCallback
+import com.fogged.fogged.Settings
+import com.fogged.fogged.constant.Action
+import com.fogged.fogged.constant.Alert
+import com.fogged.fogged.constant.Status
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent

@@ -1,9 +1,9 @@
-package com.hiddify.hiddify
+package com.fogged.fogged
 
 import android.util.Log
 import androidx.lifecycle.Observer
-import com.hiddify.hiddify.constant.Alert
-import com.hiddify.hiddify.constant.Status
+import com.fogged.fogged.constant.Alert
+import com.fogged.fogged.constant.Status
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.JSONMethodCodec
@@ -12,8 +12,8 @@ class EventHandler : FlutterPlugin {
 
     companion object {
         const val TAG = "A/EventHandler"
-        const val SERVICE_STATUS = "com.hiddify.app/service.status"
-        const val SERVICE_ALERTS = "com.hiddify.app/service.alerts"
+        const val SERVICE_STATUS = "com.fogged.app/service.status"
+        const val SERVICE_ALERTS = "com.fogged.app/service.alerts"
     }
 
     private var statusChannel: EventChannel? = null

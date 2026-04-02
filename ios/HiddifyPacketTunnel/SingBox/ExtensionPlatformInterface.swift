@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import HiddifyCore
+import FoggedCore
 import NetworkExtension
 
 public class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol {

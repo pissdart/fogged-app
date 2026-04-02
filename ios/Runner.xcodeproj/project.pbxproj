@@ -749,8 +749,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
-					"@executable_path/../hiddify-core/",
-					"@executable_path/hiddify-core/",
+					"@executable_path/../fogged-core/",
+					"@executable_path/fogged-core/",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MARKETING_VERSION = 4.1.2;
@@ -800,8 +800,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
-					"@executable_path/../hiddify-core/",
-					"@executable_path/hiddify-core/",
+					"@executable_path/../fogged-core/",
+					"@executable_path/fogged-core/",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MARKETING_VERSION = 4.1.2;
@@ -849,8 +849,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
-					"@executable_path/../hiddify-core/",
-					"@executable_path/hiddify-core/",
+					"@executable_path/../fogged-core/",
+					"@executable_path/fogged-core/",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MARKETING_VERSION = 4.1.2;
@@ -950,8 +950,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
-					"@executable_path/../hiddify-core/",
-					"@executable_path/hiddify-core/",
+					"@executable_path/../fogged-core/",
+					"@executable_path/fogged-core/",
 				);
 				ONLY_ACTIVE_ARCH = NO;
 				OTHER_CPLUSPLUSFLAGS = (
@@ -984,7 +984,7 @@
 				DEVELOPMENT_TEAM = M7Q8ASP66Z;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 4.1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = com.hiddify.ios.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fogged.ios.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -1003,7 +1003,7 @@
 				DEVELOPMENT_TEAM = M7Q8ASP66Z;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 4.1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = com.hiddify.ios.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fogged.ios.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Runner.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Runner";
@@ -1020,7 +1020,7 @@
 				DEVELOPMENT_TEAM = M7Q8ASP66Z;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 4.1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = com.hiddify.ios.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fogged.ios.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Runner.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Runner";
@@ -1174,8 +1174,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
-					"@executable_path/../hiddify-core/",
-					"@executable_path/hiddify-core/",
+					"@executable_path/../fogged-core/",
+					"@executable_path/fogged-core/",
 				);
 				OTHER_CPLUSPLUSFLAGS = (
 					"-fcxx-modules",
@@ -1221,8 +1221,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
-					"@executable_path/../hiddify-core/",
-					"@executable_path/hiddify-core/",
+					"@executable_path/../fogged-core/",
+					"@executable_path/fogged-core/",
 				);
 				ONLY_ACTIVE_ARCH = NO;
 				OTHER_CPLUSPLUSFLAGS = (

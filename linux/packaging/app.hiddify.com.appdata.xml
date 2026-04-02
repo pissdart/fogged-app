@@ -4,7 +4,7 @@
   Place this file at: linux/packaging/myappid.appdata.xml
 -->
 <component type="desktop-application">
-  <id>app.hiddify.com</id>
+  <id>app.fogged.com</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
 
@@ -12,7 +12,7 @@
   <summary>Modern Proxy and VPN Manager for Linux</summary>
 
   <developer_name>Fogged</developer_name>
-  <update_contact>linux@hiddify.com</update_contact>
+  <update_contact>linux@fogged.com</update_contact>
 
   <description>
     <p>
@@ -28,14 +28,14 @@
 
   <screenshots>
     <screenshot type="default">
-      <image>https://hiddify.com/assets/hiddify-next-mobile.svg</image>
+      <image>https://fogged.com/assets/fogged-next-mobile.svg</image>
       <caption>Main Interface of Fogged</caption>
     </screenshot>
   </screenshots>
 
-  <launchable type="desktop-id">hiddify.desktop</launchable>
+  <launchable type="desktop-id">fogged.desktop</launchable>
 
-  <icon type="stock">hiddify</icon>
+  <icon type="stock">fogged</icon>
 
   <categories>
     <category>Network</category>
@@ -53,7 +53,7 @@
   </keywords>
 
   <mime-types>
-    <mime-type>x-scheme-handler/hiddify</mime-type>
+    <mime-type>x-scheme-handler/fogged</mime-type>
     <mime-type>x-scheme-handler/v2ray</mime-type>
     <mime-type>x-scheme-handler/v2rayn</mime-type>
     <mime-type>x-scheme-handler/v2rayng</mime-type>
@@ -62,12 +62,12 @@
     <mime-type>x-scheme-handler/sing-box</mime-type>
   </mime-types>
 
-  <url type="homepage">https://hiddify.com</url>
-  <url type="bugtracker">https://github.com/hiddify/hiddify-app/issues</url>
-  <url type="help">https://docs.hiddify.com</url>
+  <url type="homepage">https://fogged.com</url>
+  <url type="bugtracker">https://github.com/fogged/fogged-app/issues</url>
+  <url type="help">https://docs.fogged.com</url>
 
   <provides>
-    <binary>hiddify</binary>
+    <binary>fogged</binary>
   </provides>
 
   <releases>
@@ -78,10 +78,10 @@
     </release>
   </releases>
 
-  <translation type="gettext">hiddify</translation>
+  <translation type="gettext">fogged</translation>
 
   <custom>
-    <value key="PackageName">hiddify</value>
+    <value key="PackageName">fogged</value>
     <value key="Priority">optional</value>
     <value key="Section">x11</value>
     <value key="InstalledSize">6604</value>

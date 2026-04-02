@@ -70,7 +70,7 @@ function InitializeSetup(): Boolean;
 var
   ResultCode: Integer;
 begin
-  Exec('taskkill', '/F /IM hiddify.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+  Exec('taskkill', '/F /IM fogged.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
   Exec('net', 'stop "FoggedTunnelService"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
   Exec('sc.exe', 'delete "FoggedTunnelService"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
   Result := True;

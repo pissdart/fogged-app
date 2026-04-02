@@ -1,6 +1,6 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
-project(hiddify LANGUAGES CXX)
+project(fogged LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
@@ -81,16 +81,16 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
-# install(FILES "../hiddify-core/bin/hiddify-core.dll" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+# install(FILES "../fogged-core/bin/fogged-core.dll" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
 #  COMPONENT Runtime)
 
-install(FILES "../hiddify-core/bin/hiddify-core.dll" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-COMPONENT Runtime RENAME hiddify-core.dll)
+install(FILES "../fogged-core/bin/fogged-core.dll" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+COMPONENT Runtime RENAME fogged-core.dll)
 
-install(FILES "../hiddify-core/bin/libcronet.dll" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+install(FILES "../fogged-core/bin/libcronet.dll" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
 COMPONENT Runtime RENAME libcronet.dll)
 
-install(FILES "../hiddify-core/bin/FoggedCli.exe" DESTINATION "${CMAKE_INSTALL_PREFIX}"
+install(FILES "../fogged-core/bin/FoggedCli.exe" DESTINATION "${CMAKE_INSTALL_PREFIX}"
 COMPONENT Runtime RENAME FoggedCli.exe)
 
 

@@ -1,4 +1,4 @@
-package com.hiddify.hiddify
+package com.fogged.fogged
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -13,7 +13,7 @@ import android.os.Build
 import android.util.Base64
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
-import com.hiddify.hiddify.Application.Companion.packageManager
+import com.fogged.fogged.Application.Companion.packageManager
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -33,7 +33,7 @@ class PlatformSettingsHandler : FlutterPlugin, MethodChannel.MethodCallHandler, 
     private lateinit var ignoreRequestResult: MethodChannel.Result
 
     companion object {
-        const val channelName = "com.hiddify.app/platform"
+        const val channelName = "com.fogged.app/platform"
 
         const val REQUEST_IGNORE_BATTERY_OPTIMIZATIONS = 44
         val gson = Gson()

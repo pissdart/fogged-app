@@ -9,11 +9,11 @@
 
 
 # display_name: Fogged
-# url: https://github.com/hiddify/hiddify-app
+# url: https://github.com/fogged/fogged-app
 # license: Other
 
-# packager: hiddify
-# packagerEmail: linux@hiddify.com
+# packager: fogged
+# packagerEmail: linux@fogged.com
 
 # icon: assets/images/source/ic_launcher_border.png
 
@@ -41,7 +41,7 @@
 # # app_links setup for Linux
 # # https://github.com/llfbandit/app_links/blob/master/doc/README_linux.md
 # supported_mime_type:
-#   - x-scheme-handler/hiddify
+#   - x-scheme-handler/fogged
 #   - x-scheme-handler/v2ray
 #   - x-scheme-handler/v2rayn
 #   - x-scheme-handler/v2rayng

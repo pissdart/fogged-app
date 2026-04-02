@@ -1,13 +1,13 @@
-package com.hiddify.hiddify.bg
+package com.fogged.fogged.bg
 
 import android.net.DnsResolver
 import android.os.Build
 import android.os.CancellationSignal
 import android.system.ErrnoException
 import androidx.annotation.RequiresApi
-import com.hiddify.hiddify.ktx.tryResumeWithException
-import com.hiddify.core.libbox.ExchangeContext
-import com.hiddify.core.libbox.LocalDNSTransport
+import com.fogged.fogged.ktx.tryResumeWithException
+import com.fogged.core.libbox.ExchangeContext
+import com.fogged.core.libbox.LocalDNSTransport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.runBlocking

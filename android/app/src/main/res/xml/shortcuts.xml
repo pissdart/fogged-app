@@ -7,7 +7,7 @@
         android:shortcutShortLabel="@string/quick_toggle">
         <intent
             android:action="android.intent.action.MAIN"
-            android:targetClass="com.hiddify.hiddify.ShortcutActivity"
+            android:targetClass="com.fogged.fogged.ShortcutActivity"
             android:targetPackage="net.fogged.vpn" />
     </shortcut>
 </shortcuts>

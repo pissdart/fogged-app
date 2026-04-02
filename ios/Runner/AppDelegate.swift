@@ -1,6 +1,6 @@
 import UIKit
 import Flutter
-import HiddifyCore
+import FoggedCore
 import Sentry
 @main
 @objc class AppDelegate: FlutterAppDelegate {

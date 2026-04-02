@@ -1,4 +1,4 @@
-package com.hiddify.hiddify;
+package net.fogged.vpn;
 
 interface IServiceCallback {
   void onServiceStatusChanged(int status);

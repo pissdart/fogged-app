@@ -4,23 +4,23 @@
 import PackageDescription
 
 let package = Package(
-     name: "Hiddify Packages",
+     name: "Fogged Packages",
      platforms: [
         // Minimum platform version
          .iOS(.v13)
      ],
      products: [
          .library(
-             name: "HiddifyCore",
-             targets: ["HiddifyCore"]),
+             name: "FoggedCore",
+             targets: ["FoggedCore"]),
      ],
      dependencies: [
          // No dependencies
      ],
      targets: [
         .binaryTarget(
-            name: "HiddifyCore",
-            path: "../Frameworks/HiddifyCore.xcframework"
+            name: "FoggedCore",
+            path: "../Frameworks/FoggedCore.xcframework"
         )
      ]
  )

@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import HiddifyCore
+import FoggedCore
 import NetworkExtension
 
 func runBlocking<T>(_ block: @escaping () async -> T) -> T {

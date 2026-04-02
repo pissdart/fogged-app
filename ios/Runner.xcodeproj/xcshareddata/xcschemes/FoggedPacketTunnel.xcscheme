@@ -16,8 +16,8 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "03E392B52ADDA00E000ADF15"
-               BuildableName = "HiddifyPacketTunnel.appex"
-               BlueprintName = "HiddifyPacketTunnel"
+               BuildableName = "FoggedPacketTunnel.appex"
+               BlueprintName = "FoggedPacketTunnel"
                ReferencedContainer = "container:Runner.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -58,7 +58,7 @@
       launchAutomaticallySubstyle = "2">
       <RemoteRunnable
          runnableDebuggingMode = "0"
-         BundleIdentifier = "apple.hiddify.com"
+         BundleIdentifier = "apple.fogged.com"
          RemotePath = "/var/containers/Bundle/Application/8EBA9FC7-47CA-4C36-B670-54E8EB45F196/Runner.app">
       </RemoteRunnable>
       <MacroExpansion>

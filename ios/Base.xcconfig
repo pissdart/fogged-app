@@ -5,6 +5,6 @@
 //  Created by GFWFighter on 7/24/1402 AP.
 //
 
-BASE_BUNDLE_IDENTIFIER=apple.hiddify.com
-SERVICE_IDENTIFIER=com.hiddify.app
+BASE_BUNDLE_IDENTIFIER=apple.fogged.com
+SERVICE_IDENTIFIER=com.fogged.app
 DEVELOPMENT_TEAM=3JFTY5BP58
