@@ -1,5 +1,6 @@
+# DISABLED - Hiddify workflow
 name: Publish to WinGet
-on:
+on: workflow_dispatch
   release:
     types: [released]
 

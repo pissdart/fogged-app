@@ -1,6 +1,7 @@
+# DISABLED - Hiddify workflow
 name: Mark stale issues and pull requests
 
-on:
+on: workflow_dispatch
   schedule:
     - cron: "30 8 * * *"
 

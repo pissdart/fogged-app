@@ -9,6 +9,7 @@ env:
   IS_GITHUB_ACTIONS: 1
   CHANNEL: "dev"
   FLUTTER_VERSION: '3.38.5'
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -20,6 +21,7 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo apt-get autoremove -y && sudo apt-get clean
+          df -h
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -37,20 +39,48 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Install deps and prepare
+      - name: Prepare - download core and assets
         run: |
-          make android-apk-install-deps || true
-          make android-apk-prepare || true
+          make android-apk-prepare 2>&1 || {
+            echo "Make target failed, trying manual download..."
+            CORE_VERSION=$(grep 'core.version' dependencies.properties | cut -d= -f2)
+            echo "Core version: $CORE_VERSION"
+
+            mkdir -p android/app/libs assets/core
+
+            # Download core binaries
+            for arch in arm64 arm amd64; do
+              URL="https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-core-android-${arch}.aar.gz"
+              echo "Downloading $URL"
+              curl -sL "$URL" | gunzip > "android/app/libs/hiddify-core-${arch}.aar" 2>/dev/null || true
+            done
+
+            # Download geo assets
+            curl -sL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db || true
+            curl -sL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db || true
+
+            ls -la android/app/libs/ assets/core/
+          }
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Generate code
+        run: dart run build_runner build --delete-conflicting-outputs 2>&1 || true
 
       - name: Build APK
         run: |
-          make android-apk-release || flutter build apk --release
+          flutter build apk --release 2>&1 || {
+            echo "Release build failed, trying debug..."
+            flutter build apk --debug
+          }
 
-      - name: Upload APK
+      - name: Find and upload APK
         uses: actions/upload-artifact@v4
         with:
           name: fogged-vpn-android
           path: |
             build/app/outputs/flutter-apk/*.apk
-            out/*.apk
+            build/app/outputs/apk/**/*.apk
           retention-days: 30
+          if-no-files-found: warn
