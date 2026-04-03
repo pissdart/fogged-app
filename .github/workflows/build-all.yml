@@ -1,0 +1,160 @@
+name: Build All Platforms
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.github/workflows/build-android.yml'
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: '3.38.5'
+
+jobs:
+  build-android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/setup-java@v4
+        with: { distribution: 'zulu', java-version: '17' }
+      - uses: android-actions/setup-android@v3
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '${{ env.FLUTTER_VERSION }}', channel: 'stable', cache: true }
+      - name: Download core library
+        run: |
+          set -e
+          CORE_VERSION=$(grep 'core.version' dependencies.properties | cut -d= -f2)
+          mkdir -p android/app/libs
+          curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-android.tar.gz" -o /tmp/core.tar.gz
+          tar xzf /tmp/core.tar.gz -C android/app/libs/
+      - name: Download geo assets
+        run: |
+          mkdir -p assets/core
+          curl -fSL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db
+          curl -fSL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fogged-android
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 90
+
+  build-windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '${{ env.FLUTTER_VERSION }}', channel: 'stable', cache: true }
+      - name: Download core library
+        shell: bash
+        run: |
+          set -e
+          CORE_VERSION=$(grep 'core.version' dependencies.properties | cut -d= -f2)
+          mkdir -p fogged-core/bin
+          curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-windows-amd64.tar.gz" -o core.tar.gz
+          tar xzf core.tar.gz -C fogged-core/bin/
+          cd fogged-core/bin && for f in hiddify-*; do mv "$f" "${f/hiddify-/fogged-}"; done && cd ../..
+          ls fogged-core/bin/
+      - name: Download geo assets
+        shell: bash
+        run: |
+          mkdir -p assets/core
+          curl -fSL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db
+          curl -fSL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter build windows --release
+      - name: Create Windows installer
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installers\windows\installer.iss
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fogged-windows
+          path: build/installer/Fogged-Setup.exe
+          retention-days: 90
+
+  build-macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '${{ env.FLUTTER_VERSION }}', channel: 'stable', cache: true }
+      - name: Download core library
+        run: |
+          set -e
+          CORE_VERSION=$(grep 'core.version' dependencies.properties | cut -d= -f2)
+          mkdir -p fogged-core/bin
+          curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-macos.tar.gz" -o /tmp/core.tar.gz
+          tar xzf /tmp/core.tar.gz -C fogged-core/bin/
+          cd fogged-core/bin && for f in hiddify-*; do mv "$f" "${f/hiddify-/fogged-}"; done && cd ../..
+          ls fogged-core/bin/
+      - name: Download geo assets
+        run: |
+          mkdir -p assets/core
+          curl -fSL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db
+          curl -fSL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter build macos --release
+      - name: Create DMG
+        run: |
+          APP_PATH="build/macos/Build/Products/Release/fogged.app"
+          if [ ! -d "$APP_PATH" ]; then
+            APP_PATH=$(find build/macos/Build/Products/Release -name "*.app" -maxdepth 1 | head -1)
+          fi
+          hdiutil create -volname "Fogged VPN" -srcfolder "$APP_PATH" -ov -format UDZO build/Fogged-macOS.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fogged-macos
+          path: build/Fogged-macOS.dmg
+          retention-days: 90
+
+  release:
+    name: Create Release
+    needs: [build-android, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Rename artifacts
+        run: |
+          mv artifacts/fogged-android/app-release.apk artifacts/Fogged-Android.apk 2>/dev/null || true
+          mv artifacts/fogged-windows/Fogged-Setup.exe artifacts/Fogged-Setup.exe 2>/dev/null || true
+          mv artifacts/fogged-macos/Fogged-macOS.dmg artifacts/Fogged-macOS.dmg 2>/dev/null || true
+          ls -lh artifacts/
+
+      - name: Update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: Fogged VPN
+          body: |
+            ## Release Downloads
+
+            | OS | Download |
+            |---|---|
+            | Android | [Fogged-Android.apk](https://github.com/pissdart/fogged-app/releases/download/v1.0.0/Fogged-Android.apk) |
+            | Windows | [Fogged-Setup.exe](https://github.com/pissdart/fogged-app/releases/download/v1.0.0/Fogged-Setup.exe) |
+            | macOS | [Fogged-macOS.dmg](https://github.com/pissdart/fogged-app/releases/download/v1.0.0/Fogged-macOS.dmg) |
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/Fogged-Android.apk
+            artifacts/Fogged-Setup.exe
+            artifacts/Fogged-macOS.dmg
