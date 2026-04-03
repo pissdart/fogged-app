@@ -1,0 +1,127 @@
+name: Build All Platforms
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.github/workflows/build-android.yml'
+
+env:
+  FLUTTER_VERSION: '3.38.5'
+
+jobs:
+  build-android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/setup-java@v4
+        with: { distribution: 'zulu', java-version: '17' }
+      - uses: android-actions/setup-android@v3
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '${{ env.FLUTTER_VERSION }}', channel: 'stable', cache: true }
+      - name: Download core library
+        run: |
+          set -e
+          CORE_VERSION=$(grep 'core.version' dependencies.properties | cut -d= -f2)
+          mkdir -p android/app/libs
+          curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-android.tar.gz" -o /tmp/core.tar.gz
+          tar xzf /tmp/core.tar.gz -C android/app/libs/
+      - name: Download geo assets
+        run: |
+          mkdir -p assets/core
+          curl -fSL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db
+          curl -fSL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fogged-android
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 90
+
+  build-windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '${{ env.FLUTTER_VERSION }}', channel: 'stable', cache: true }
+      - name: Download core library
+        shell: bash
+        run: |
+          set -e
+          CORE_VERSION=$(grep 'core.version' dependencies.properties | cut -d= -f2)
+          mkdir -p windows/libs
+          curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-windows-amd64.tar.gz" -o core.tar.gz
+          tar xzf core.tar.gz -C windows/libs/
+          ls windows/libs/
+      - name: Download geo assets
+        shell: bash
+        run: |
+          mkdir -p assets/core
+          curl -fSL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db
+          curl -fSL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter build windows --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fogged-windows
+          path: build/windows/x64/runner/Release/
+          retention-days: 90
+
+  build-macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '${{ env.FLUTTER_VERSION }}', channel: 'stable', cache: true }
+      - name: Download core library
+        run: |
+          set -e
+          CORE_VERSION=$(grep 'core.version' dependencies.properties | cut -d= -f2)
+          mkdir -p macos/libs
+          curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-macos.tar.gz" -o /tmp/core.tar.gz
+          tar xzf /tmp/core.tar.gz -C macos/libs/
+          ls macos/libs/
+      - name: Download geo assets
+        run: |
+          mkdir -p assets/core
+          curl -fSL "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -o assets/core/geoip.db
+          curl -fSL "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -o assets/core/geosite.db
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter build macos --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fogged-macos
+          path: build/macos/Build/Products/Release/
+          retention-days: 90
+
+  release:
+    name: Create Release
+    needs: [build-android, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Fogged VPN Build ${{ github.run_number }}
+          draft: false
+          prerelease: true
+          files: |
+            artifacts/fogged-android/app-release.apk
+          generate_release_notes: true
