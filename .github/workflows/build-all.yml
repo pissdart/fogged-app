@@ -8,6 +8,9 @@ on:
       - '**.md'
       - '.github/workflows/build-android.yml'
 
+permissions:
+  contents: write
+
 env:
   FLUTTER_VERSION: '3.38.5'
 
