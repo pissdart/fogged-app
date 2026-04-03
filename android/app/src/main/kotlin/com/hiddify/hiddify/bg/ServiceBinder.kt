@@ -2,8 +2,8 @@ package com.fogged.fogged.bg
 
 import android.os.RemoteCallbackList
 import androidx.lifecycle.MutableLiveData
-import com.fogged.fogged.IService
-import com.fogged.fogged.IServiceCallback
+import net.fogged.vpn.IService
+import net.fogged.vpn.IServiceCallback
 import com.fogged.fogged.constant.Status
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers

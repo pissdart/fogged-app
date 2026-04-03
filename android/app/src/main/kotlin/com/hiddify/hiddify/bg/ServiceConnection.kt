@@ -1,7 +1,7 @@
 package com.fogged.fogged.bg
 
-import com.fogged.fogged.IService
-import com.fogged.fogged.IServiceCallback
+import net.fogged.vpn.IService
+import net.fogged.vpn.IServiceCallback
 import com.fogged.fogged.Settings
 import com.fogged.fogged.constant.Action
 import com.fogged.fogged.constant.Alert
