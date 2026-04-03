@@ -62,13 +62,23 @@ jobs:
         run: flutter analyze --no-fatal-infos --no-fatal-warnings 2>&1 | tail -30 || true
 
       - name: Build debug APK
+        run: flutter build apk --debug 2>&1 || true
+
+      - name: Check APK exists
         run: |
-          flutter build apk --debug 2>&1 | tee /tmp/build.log; EXIT=${PIPESTATUS[0]}
-          if [ $EXIT -ne 0 ]; then
-            echo "::error::BUILD FAILED - Last 40 lines:"
-            tail -40 /tmp/build.log | while read line; do echo "::error::$line"; done
-            exit $EXIT
+          if [ ! -f build/app/outputs/flutter-apk/app-debug.apk ]; then
+            echo "BUILD FAILED. Errors from Kotlin compilation:"
+            find . -name "*.log" -path "*/kotlin/*" -exec tail -50 {} \; 2>/dev/null
+            echo "---"
+            echo "Errors from build output:"
+            find build -name "output.json" -exec cat {} \; 2>/dev/null
+            echo "---"
+            # Try to find the actual error
+            find build -name "*.log" | head -5 | xargs tail -20 2>/dev/null
+            exit 1
           fi
+          echo "APK built successfully!"
+          ls -lh build/app/outputs/flutter-apk/app-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
