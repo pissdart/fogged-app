@@ -57,10 +57,10 @@ jobs:
         run: |
           set -e
           CORE_VERSION=$(grep 'core.version' dependencies.properties | cut -d= -f2)
-          mkdir -p windows/libs
+          mkdir -p fogged-core/bin
           curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-windows-amd64.tar.gz" -o core.tar.gz
-          tar xzf core.tar.gz -C windows/libs/
-          ls windows/libs/
+          tar xzf core.tar.gz -C fogged-core/bin/
+          ls fogged-core/bin/
       - name: Download geo assets
         shell: bash
         run: |
@@ -87,10 +87,10 @@ jobs:
         run: |
           set -e
           CORE_VERSION=$(grep 'core.version' dependencies.properties | cut -d= -f2)
-          mkdir -p macos/libs
+          mkdir -p fogged-core/bin
           curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-macos.tar.gz" -o /tmp/core.tar.gz
-          tar xzf /tmp/core.tar.gz -C macos/libs/
-          ls macos/libs/
+          tar xzf /tmp/core.tar.gz -C fogged-core/bin/
+          ls fogged-core/bin/
       - name: Download geo assets
         run: |
           mkdir -p assets/core
