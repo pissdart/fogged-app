@@ -87,11 +87,15 @@ install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
 install(FILES "../fogged-core/bin/fogged-core.dll" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
 COMPONENT Runtime RENAME fogged-core.dll)
 
-install(FILES "../fogged-core/bin/libcronet.dll" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-COMPONENT Runtime RENAME libcronet.dll)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../fogged-core/bin/libcronet.dll")
+  install(FILES "../fogged-core/bin/libcronet.dll" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime RENAME libcronet.dll)
+endif()
 
-install(FILES "../fogged-core/bin/FoggedCli.exe" DESTINATION "${CMAKE_INSTALL_PREFIX}"
-COMPONENT Runtime RENAME FoggedCli.exe)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../fogged-core/bin/FoggedCli.exe")
+  install(FILES "../fogged-core/bin/FoggedCli.exe" DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime RENAME FoggedCli.exe)
+endif()
 
 
 if(PLUGIN_BUNDLED_LIBRARIES)
