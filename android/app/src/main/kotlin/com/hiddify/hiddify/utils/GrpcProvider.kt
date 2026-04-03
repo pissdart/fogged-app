@@ -16,7 +16,7 @@ package com.fogged.fogged.utils
  * limitations under the License.
  */
 
-import com.fogged.core.api.v2.hcore.CoreClient
+import com.hiddify.core.api.v2.hcore.CoreClient
 import com.fogged.fogged.Settings
 import com.squareup.wire.GrpcClient
 import io.grpc.CallOptions

@@ -9,10 +9,10 @@ import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
-import com.fogged.core.libbox.Notification
+import com.hiddify.core.libbox.Notification
 import com.fogged.fogged.constant.PerAppProxyMode
 import com.fogged.fogged.ktx.toIpPrefix
-import com.fogged.core.libbox.TunOptions
+import com.hiddify.core.libbox.TunOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext

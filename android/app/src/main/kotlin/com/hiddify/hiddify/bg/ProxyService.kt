@@ -2,7 +2,7 @@ package com.fogged.fogged.bg
 
 import android.app.Service
 import android.content.Intent
-import com.fogged.core.libbox.Notification
+import com.hiddify.core.libbox.Notification
 
 class ProxyService :
     Service(),

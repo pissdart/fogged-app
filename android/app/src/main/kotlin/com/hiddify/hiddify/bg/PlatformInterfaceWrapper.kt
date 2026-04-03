@@ -8,25 +8,25 @@ import android.os.Process
 import android.util.Log
 import androidx.annotation.RequiresApi
 import com.fogged.fogged.Application
-import com.fogged.core.libbox.InterfaceUpdateListener
-import com.fogged.core.libbox.Libbox
-import com.fogged.core.libbox.NetworkInterfaceIterator
-import com.fogged.core.libbox.PlatformInterface
-import com.fogged.core.libbox.StringIterator
-import com.fogged.core.libbox.TunOptions
-import com.fogged.core.libbox.WIFIState
+import com.hiddify.core.libbox.InterfaceUpdateListener
+import com.hiddify.core.libbox.Libbox
+import com.hiddify.core.libbox.NetworkInterfaceIterator
+import com.hiddify.core.libbox.PlatformInterface
+import com.hiddify.core.libbox.StringIterator
+import com.hiddify.core.libbox.TunOptions
+import com.hiddify.core.libbox.WIFIState
 import java.net.Inet6Address
 import java.net.InetSocketAddress
 import java.net.InterfaceAddress
 import java.net.NetworkInterface
 import java.util.Enumeration
-import com.fogged.core.libbox.NetworkInterface as LibboxNetworkInterface
+import com.hiddify.core.libbox.NetworkInterface as LibboxNetworkInterface
 
 
 
 import android.system.OsConstants
-import com.fogged.core.libbox.ConnectionOwner
-import com.fogged.core.libbox.LocalDNSTransport
+import com.hiddify.core.libbox.ConnectionOwner
+import com.hiddify.core.libbox.LocalDNSTransport
 import java.security.KeyStore
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi

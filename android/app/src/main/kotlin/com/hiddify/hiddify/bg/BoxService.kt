@@ -24,18 +24,18 @@ import com.fogged.fogged.Settings
 import com.fogged.fogged.constant.Action
 import com.fogged.fogged.constant.Alert
 import com.fogged.fogged.constant.Status
-import com.fogged.core.mobile.SetupOptions
+import com.hiddify.core.mobile.SetupOptions
 
 import go.Seq
-import com.fogged.core.libbox.Libbox
-import com.fogged.core.mobile.Mobile
+import com.hiddify.core.libbox.Libbox
+import com.hiddify.core.mobile.Mobile
 
 
-import com.fogged.core.libbox.CommandServer
-import com.fogged.core.libbox.CommandServerHandler
-import com.fogged.core.libbox.Notification
-import com.fogged.core.libbox.PlatformInterface
-import com.fogged.core.libbox.SystemProxyStatus
+import com.hiddify.core.libbox.CommandServer
+import com.hiddify.core.libbox.CommandServerHandler
+import com.hiddify.core.libbox.Notification
+import com.hiddify.core.libbox.PlatformInterface
+import com.hiddify.core.libbox.SystemProxyStatus
 import com.fogged.fogged.BuildConfig
 import com.fogged.fogged.MainActivity
 import com.fogged.fogged.constant.Bugs

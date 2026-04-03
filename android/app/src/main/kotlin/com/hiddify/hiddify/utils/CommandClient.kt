@@ -1,14 +1,14 @@
 package com.fogged.fogged.utils
 
-import com.fogged.core.libbox.CommandClient
-import com.fogged.core.libbox.CommandClientHandler
-import com.fogged.core.libbox.CommandClientOptions
-import com.fogged.core.libbox.Connections
-import com.fogged.core.libbox.Libbox
-import com.fogged.core.libbox.OutboundGroup
-import com.fogged.core.libbox.OutboundGroupIterator
-import com.fogged.core.libbox.StatusMessage
-import com.fogged.core.libbox.StringIterator
+import com.hiddify.core.libbox.CommandClient
+import com.hiddify.core.libbox.CommandClientHandler
+import com.hiddify.core.libbox.CommandClientOptions
+import com.hiddify.core.libbox.Connections
+import com.hiddify.core.libbox.Libbox
+import com.hiddify.core.libbox.OutboundGroup
+import com.hiddify.core.libbox.OutboundGroupIterator
+import com.hiddify.core.libbox.StatusMessage
+import com.hiddify.core.libbox.StringIterator
 import com.fogged.fogged.ktx.toList
 import go.Seq
 import kotlinx.coroutines.CoroutineScope

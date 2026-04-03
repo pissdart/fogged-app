@@ -3,9 +3,9 @@ package com.fogged.fogged.ktx
 import android.net.IpPrefix
 import android.os.Build
 import androidx.annotation.RequiresApi
-import com.fogged.core.libbox.RoutePrefix
-import com.fogged.core.libbox.StringIterator
-import com.fogged.core.libbox.StringBox
+import com.hiddify.core.libbox.RoutePrefix
+import com.hiddify.core.libbox.StringIterator
+import com.hiddify.core.libbox.StringBox
 import java.net.InetAddress
 
 val StringBox?.unwrap: String

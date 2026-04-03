@@ -3,7 +3,7 @@ package com.fogged.fogged.bg
 import android.net.Network
 import android.os.Build
 import com.fogged.fogged.Application
-import com.fogged.core.libbox.InterfaceUpdateListener
+import com.hiddify.core.libbox.InterfaceUpdateListener
 import com.fogged.fogged.constant.Bugs
 
 

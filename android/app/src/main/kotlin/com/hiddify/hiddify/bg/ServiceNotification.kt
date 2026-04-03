@@ -14,12 +14,12 @@ import androidx.annotation.StringRes
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.MutableLiveData
-import com.fogged.core.api.v2.config.Protocol
-import com.fogged.core.api.v2.hcommon.Empty
-import com.fogged.core.api.v2.hcore.CoreClient
-import com.fogged.core.api.v2.hcore.SystemInfo
-import com.fogged.core.api.v2.hello.HelloClient
-import com.fogged.core.api.v2.hello.HelloRequest
+import com.hiddify.core.api.v2.config.Protocol
+import com.hiddify.core.api.v2.hcommon.Empty
+import com.hiddify.core.api.v2.hcore.CoreClient
+import com.hiddify.core.api.v2.hcore.SystemInfo
+import com.hiddify.core.api.v2.hello.HelloClient
+import com.hiddify.core.api.v2.hello.HelloRequest
 import com.fogged.fogged.Application
 import com.fogged.fogged.MainActivity
 import com.fogged.fogged.R
@@ -27,7 +27,7 @@ import com.fogged.fogged.Settings
 import com.fogged.fogged.constant.Action
 import com.fogged.fogged.constant.Status
 //import com.fogged.fogged.utils.CommandClient
-import com.fogged.core.libbox.Libbox
+import com.hiddify.core.libbox.Libbox
 import com.fogged.fogged.Application.Companion.notification
 import com.fogged.fogged.utils.GrpcClientProvider
 import com.squareup.wire.GrpcClient
