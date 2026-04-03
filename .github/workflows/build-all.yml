@@ -60,6 +60,7 @@ jobs:
           mkdir -p fogged-core/bin
           curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-windows-amd64.tar.gz" -o core.tar.gz
           tar xzf core.tar.gz -C fogged-core/bin/
+          cd fogged-core/bin && for f in hiddify-*; do mv "$f" "${f/hiddify-/fogged-}"; done && cd ../..
           ls fogged-core/bin/
       - name: Download geo assets
         shell: bash
@@ -90,6 +91,7 @@ jobs:
           mkdir -p fogged-core/bin
           curl -fSL "https://github.com/hiddify/hiddify-next-core/releases/download/v${CORE_VERSION}/hiddify-lib-macos.tar.gz" -o /tmp/core.tar.gz
           tar xzf /tmp/core.tar.gz -C fogged-core/bin/
+          cd fogged-core/bin && for f in hiddify-*; do mv "$f" "${f/hiddify-/fogged-}"; done && cd ../..
           ls fogged-core/bin/
       - name: Download geo assets
         run: |
