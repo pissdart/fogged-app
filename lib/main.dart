@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 
 void main() => runApp(const FoggedApp());
 
@@ -16,7 +17,7 @@ class L {
   static final _t = {
     'en': {
       'secure_vpn': 'Secure VPN',
-      'enter_telegram': 'Enter your Telegram username',
+      'enter_telegram': 'Enter your Telegram username or User ID',
       'send_code': 'Send Code',
       'enter_code': 'Enter the code sent to your Telegram',
       'verify': 'Verify',
@@ -34,7 +35,7 @@ class L {
       'protected': 'PROTECTED',
       'encrypted': 'All traffic encrypted',
       'tap_connect': 'Tap to connect',
-      'join_channel': 'Please join our channel first:\nhttps://t.me/foggedvpngroup',
+      'join_channel': 'Please join our channel first:\nhttps://t.me/foggedvpn',
       'code_sent': 'Check your Telegram for the code',
       'logout': 'Logout',
       'debug': 'Debug',
@@ -69,7 +70,7 @@ class L {
       'set_preferred': 'Set as preferred',
       'site_checker': 'Site Checker',
       'check_all': 'Check All',
-      'connect_first': 'Connect to check sites',
+      'connect_first': 'Connect first',
       'whitelist_mode': 'Whitelist Mode',
       'add_domain': 'Add domain',
       'remove': 'Remove',
@@ -83,7 +84,7 @@ class L {
     },
     'ru': {
       'secure_vpn': 'Безопасный VPN',
-      'enter_telegram': 'Введите ваш Telegram',
+      'enter_telegram': 'Введите ваш Telegram логин или User ID',
       'send_code': 'Отправить код',
       'enter_code': 'Введите код из Telegram',
       'verify': 'Подтвердить',
@@ -101,7 +102,7 @@ class L {
       'protected': 'ЗАЩИЩЕНО',
       'encrypted': 'Весь трафик зашифрован',
       'tap_connect': 'Нажмите для подключения',
-      'join_channel': 'Подпишитесь на канал:\nhttps://t.me/foggedvpngroup',
+      'join_channel': 'Подпишитесь на канал:\nhttps://t.me/foggedvpn',
       'code_sent': 'Код отправлен в Telegram',
       'logout': 'Выход',
       'debug': 'Отладка',
@@ -136,7 +137,7 @@ class L {
       'set_preferred': 'Установить',
       'site_checker': 'Проверка сайтов',
       'check_all': 'Проверить все',
-      'connect_first': 'Подключитесь для проверки',
+      'connect_first': 'Сначала подключитесь',
       'whitelist_mode': 'Режим белого списка',
       'add_domain': 'Добавить домен',
       'remove': 'Удалить',
@@ -150,7 +151,7 @@ class L {
     },
     'zh': {
       'secure_vpn': '安全VPN',
-      'enter_telegram': '输入您的Telegram用户名',
+      'enter_telegram': '输入Telegram用户名或User ID',
       'send_code': '发送验证码',
       'enter_code': '输入Telegram发送的验证码',
       'verify': '验证',
@@ -168,7 +169,7 @@ class L {
       'protected': '已保护',
       'encrypted': '所有流量已加密',
       'tap_connect': '点击连接',
-      'join_channel': '请先加入频道:\nhttps://t.me/foggedvpngroup',
+      'join_channel': '请先加入频道:\nhttps://t.me/foggedvpn',
       'code_sent': '验证码已发送到Telegram',
       'logout': '退出',
       'debug': '调试',
@@ -203,7 +204,7 @@ class L {
       'set_preferred': '设为首选',
       'site_checker': '网站检查',
       'check_all': '检查全部',
-      'connect_first': '请先连接VPN',
+      'connect_first': '请先连接',
       'whitelist_mode': '白名单模式',
       'add_domain': '添加域名',
       'remove': '删除',
@@ -253,6 +254,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   String _telegramHandle = '';
   bool _authLoading = false;
   bool _codeRequested = false;
+  int _codeTimer = 0; // seconds remaining
   final _handleCtl = TextEditingController();
   final _codeCtl = TextEditingController();
 
@@ -311,7 +313,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiBase = 'https://dl.fogged.net';
-  static const _appVersion = '1.1.0';
+  String _appVersion = '1.2.0'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -321,7 +323,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       if (call.method == 'isConnected') return _connected;
       return null;
     });
+    // Load version from package info (single source of truth: pubspec.yaml)
+    PackageInfo.fromPlatform().then((info) => _appVersion = info.version);
     _loadAuth();
+    // Check for updates on every app start (all platforms)
+    Future.delayed(const Duration(seconds: 2), _checkForUpdate);
   }
 
   @override
@@ -342,11 +348,27 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     L.setLang(['ru', 'zh'].contains(lang) ? lang : 'en');
     _whitelistMode = prefs.getBool('whitelist_mode') ?? false;
     _splitDomains = prefs.getStringList('split_domains') ?? [];
+    // Restore last used protocol/server/mode
+    final savedProtocol = prefs.getString('last_protocol');
+    final savedServer = prefs.getString('last_server');
+    final savedMode = prefs.getString('last_mode');
+    if (savedMode != null) _mode = savedMode;
+    if (savedProtocol != null && _protocols.contains(savedProtocol)) _protocol = savedProtocol;
     if (uuid.isNotEmpty) {
       setState(() { _loggedIn = true; _uuid = uuid; _telegramHandle = handle; });
       await _fetchSubscription();
-      _fetchAccountInfo();
-      _checkForUpdate();
+      // Restore saved server after subscription loads
+      if (savedServer != null && _filteredServers.any((s) => s.name == savedServer)) {
+        _server = savedServer;
+      }
+      await _fetchAccountInfo();
+      // Auto-connect if user was connected last session or has auto-start enabled
+      final wasConnected = prefs.getBool('was_connected') ?? false;
+      final autoStart = prefs.getBool('auto_start') ?? false;
+      if ((wasConnected || autoStart) && _filteredServers.isNotEmpty) {
+        setState(() => _connecting = true);
+        _startProxy();
+      }
     }
   }
 
@@ -365,34 +387,79 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           _totalReferrals = (j['total_referrals'] ?? 0).toInt();
           _userRole = j['role'] ?? 'user';
         });
+        // Load cloud-synced app settings if present
+        final settings = j['app_settings'];
+        if (settings is Map) {
+          final prefs = await SharedPreferences.getInstance();
+          if (settings['whitelist_mode'] != null && !prefs.containsKey('whitelist_mode')) {
+            _whitelistMode = settings['whitelist_mode'] == true;
+          }
+          if (settings['split_domains'] is List && !prefs.containsKey('split_domains')) {
+            _splitDomains = (settings['split_domains'] as List).cast<String>();
+          }
+          if (settings['protocol'] is String && !prefs.containsKey('last_protocol')) {
+            _protocol = settings['protocol'];
+          }
+          if (settings['mode'] is String && !prefs.containsKey('last_mode')) {
+            _mode = settings['mode'];
+          }
+        }
+      } else {
+        _addLog('account fetch: ${resp.statusCode}');
       }
+    } catch (e) {
+      _addLog('account fetch error: $e');
+    }
+  }
+
+  /// Sync app settings to server (cloud backup)
+  Future<void> _syncSettings() async {
+    if (_uuid.isEmpty) return;
+    try {
+      await http.post(Uri.parse('$_apiBase/account/$_uuid/settings'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'whitelist_mode': _whitelistMode,
+          'split_domains': _splitDomains,
+          'protocol': _protocol,
+          'server': _server,
+          'mode': _mode,
+        }));
     } catch (_) {}
   }
 
   Future<void> _checkForUpdate() async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final lastDismissed = prefs.getInt('update_dismissed_at') ?? 0;
+      final skippedVersion = prefs.getString('update_skipped_version') ?? '';
+      final installedVersion = prefs.getString('update_installed_version') ?? '';
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (now - lastDismissed < 86400000) return;
+
       final resp = await http.get(Uri.parse('$_apiBase/version'));
-      if (resp.statusCode == 200) {
-        final j = jsonDecode(resp.body);
-        final latest = j['version'] as String? ?? _appVersion;
-        final url = j['download_url'] as String? ?? '';
-        final notes = j['notes'] as String? ?? '';
-        if (latest != _appVersion && url.isNotEmpty && mounted) {
-          // Show update dialog
-          showDialog(context: context, builder: (ctx) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A1A),
-            title: const Text('Update Available', style: TextStyle(color: Colors.white)),
-            content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('v$latest', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-              if (notes.isNotEmpty) ...[const SizedBox(height: 8), Text(notes, style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 13))],
-            ]),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: Text('Later', style: TextStyle(color: Colors.white.withValues(alpha: 0.5)))),
-              TextButton(onPressed: () { Navigator.pop(ctx); Process.run('open', [url]); }, child: const Text('Update', style: TextStyle(color: Colors.white))),
-            ],
-          ));
-        }
-      }
+      if (resp.statusCode != 200) return;
+      final j = jsonDecode(resp.body);
+      final latest = j['version'] as String? ?? _appVersion;
+      final notes = j['notes'] as String? ?? 'Improvements and bug fixes.';
+      if (latest == _appVersion || latest == skippedVersion || latest == installedVersion) return;
+
+      final downloadUrl = Platform.isMacOS ? (j['download_macos'] as String? ?? '')
+          : Platform.isWindows ? (j['download_windows'] as String? ?? '')
+          : (j['download_android'] as String? ?? '');
+      if (downloadUrl.isEmpty || !mounted) return;
+
+      showDialog(context: context, barrierDismissible: false, builder: (ctx) =>
+        _UpdateDialog(version: latest, notes: notes, downloadUrl: downloadUrl, onSkip: () async {
+          Navigator.pop(ctx);
+          final p = await SharedPreferences.getInstance();
+          await p.setString('update_skipped_version', latest);
+        }, onLater: () async {
+          Navigator.pop(ctx);
+          final p = await SharedPreferences.getInstance();
+          await p.setInt('update_dismissed_at', DateTime.now().millisecondsSinceEpoch);
+        }),
+      );
     } catch (_) {}
   }
 
@@ -422,7 +489,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         body: jsonEncode({'telegram_handle': handle}));
       final j = jsonDecode(resp.body);
       if (j['ok'] == true) {
-        setState(() { _codeRequested = true; _telegramHandle = handle; });
+        setState(() { _codeRequested = true; _telegramHandle = handle; _codeTimer = 300; });
+        // Start countdown timer (5 min = 300s)
+        Future.doWhile(() async {
+          await Future.delayed(const Duration(seconds: 1));
+          if (!mounted || _codeTimer <= 0) return false;
+          setState(() => _codeTimer--);
+          return _codeTimer > 0;
+        });
         _showMsg('Check your Telegram for the code');
       } else {
         _showError(j['message'] ?? 'Request failed');
@@ -547,7 +621,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       await _setSystemProxy(false);
     }
     await Future.delayed(const Duration(milliseconds: 500)); // Wait for port release
-    if (mounted) setState(() { _connected = false; _connecting = false; _uptime = '--'; _downloaded = '0 B'; _debugLogs.clear(); }); _trayChannel.invokeMethod('setConnected', false);
+    if (mounted) setState(() { _connected = false; _connecting = false; _uptime = '--'; _downloaded = '0 B'; }); _trayChannel.invokeMethod('setConnected', false); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', false));
   }
 
   Future<void> _toggleConnection() async {
@@ -571,7 +645,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           'pubkey': srv.params['pubkey'] ?? '',
         });
         if (result == true) {
-          setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true);
+          setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
           _startUptimeTimer();
           _addLog('Android VPN connected');
         } else {
@@ -624,7 +698,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           if (!_connected && (line.contains('started') || line.contains('listening') || line.contains('TCP'))) {
             await Future.delayed(const Duration(milliseconds: 500));
             await _setSystemProxy(true);
-            setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true);
+            setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
             _startUptimeTimer();
           }
         }
@@ -635,7 +709,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         // Xray/Hysteria log to stderr
         if (!_connected && (line.contains('started') || line.contains('listening') || line.contains('TCP') || line.contains('connected'))) {
           _setSystemProxy(true);
-          setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true);
+          setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
           _startUptimeTimer();
         }
       });
@@ -645,7 +719,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         Future.delayed(const Duration(seconds: 2), () async {
           if (_connecting && mounted) {
             await _setSystemProxy(true);
-            setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true);
+            setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
             _startUptimeTimer();
           }
         });
@@ -672,7 +746,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       final status = json['status'] as String?;
       if (status == 'connected') {
         _setSystemProxy(true);
-        setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true);
+        setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
         _startUptimeTimer();
       } else if (status == 'log') {
         _addLog(json['msg'] as String? ?? '');
@@ -923,11 +997,15 @@ $conditions
         const SizedBox(height: 20),
         // Logo
         Padding(padding: const EdgeInsets.symmetric(vertical: 12),
-          child: Image.asset('assets/logo.png', width: 28, height: 28, opacity: AlwaysStoppedAnimation(_connected ? 1.0 : 0.4))),
+          child: Column(children: [
+            Image.asset('assets/logo.png', width: 28, height: 28, opacity: AlwaysStoppedAnimation(_connected ? 1.0 : 0.7)),
+            const SizedBox(height: 4),
+            Text('v$_appVersion', style: TextStyle(fontSize: 9, color: Colors.white.withValues(alpha: 0.3))),
+          ])),
         const SizedBox(height: 8),
         _navIcon(Icons.shield, 0),
         _navIcon(Icons.speed, 2),
-        _navIcon(Icons.language, 4),  // site checker
+        _navIcon(Icons.public, 4),  // site checker
         _navIcon(Icons.settings, 1),
         const Spacer(),
         if (_userRole == 'admin' || _userRole == 'supermod')
@@ -935,7 +1013,7 @@ $conditions
         // Sub days
         if (_subEndsAt.isNotEmpty) Padding(
           padding: const EdgeInsets.only(bottom: 12),
-          child: Text(_daysLeft, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold,
+          child: Text('${_daysLeft}d', style: TextStyle(fontSize: 9,
             color: int.tryParse(_daysLeft) != null && int.parse(_daysLeft) > 3 ? Colors.white24 : Colors.red.shade300)),
         ),
         const SizedBox(height: 8),
@@ -1013,6 +1091,8 @@ $conditions
                     final autoLang = {'russia': 'ru', 'china': 'zh', 'direct': 'en'}[v] ?? 'en';
                     _setLang(autoLang);
                     setState(() { _mode = v; _testResult = ''; });
+                    SharedPreferences.getInstance().then((p) => p.setString('last_mode', v));
+                    _syncSettings();
                     _fetchSubscription().then((_) {
                       final f = _filteredServers;
                       if (f.isNotEmpty) setState(() => _server = f.first.name);
@@ -1023,6 +1103,8 @@ $conditions
                 _selectRow(L.tr('protocol'), _protocol, () =>
                   _showSheet(L.tr('protocol'), _protocols.map((p) => (p, p)).toList(), _protocol, (v) {
                     setState(() { _protocol = v; _testResult = ''; final f = _filteredServers; if (f.isNotEmpty) _server = f.first.name; });
+                    SharedPreferences.getInstance().then((p) { p.setString('last_protocol', v); p.setString('last_server', _server); });
+                    _syncSettings();
                     if (_connected) _disconnect().then((_) { setState(() => _connecting = true); _startProxy(); });
                   })),
                 _thinDiv(),
@@ -1030,6 +1112,8 @@ $conditions
                   if (filtered.isEmpty) return;
                   _showSheet(L.tr('server'), filtered.map((s) => (s.name, s.name)).toList(), _server, (v) {
                     setState(() { _server = v; _testResult = ''; });
+                    SharedPreferences.getInstance().then((p) => p.setString('last_server', v));
+                    _syncSettings();
                     if (_connected) _disconnect().then((_) { setState(() => _connecting = true); _startProxy(); });
                   });
                 }),
@@ -1519,8 +1603,8 @@ $conditions
         Text(L.tr('enter_telegram'), style: TextStyle(fontSize: 13, color: Colors.white.withValues(alpha: 0.5))),
         const SizedBox(height: 12),
         TextField(controller: _handleCtl, style: const TextStyle(color: Colors.white, fontSize: 14),
-          decoration: InputDecoration(hintText: '@username', hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.2)),
-            prefixIcon: Icon(Icons.alternate_email, color: Colors.white.withValues(alpha: 0.3), size: 18),
+          decoration: InputDecoration(hintText: '@username or User ID', hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.2)),
+            prefixIcon: Icon(Icons.person, color: Colors.white.withValues(alpha: 0.3), size: 18),
             filled: true, fillColor: Colors.white.withValues(alpha: 0.05),
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
             enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))))),
@@ -1532,7 +1616,10 @@ $conditions
         )),
       ] else ...[
         Text(L.tr('enter_code'), style: TextStyle(fontSize: 13, color: Colors.white.withValues(alpha: 0.5))),
-        const SizedBox(height: 12),
+        const SizedBox(height: 6),
+        Text('${(_codeTimer ~/ 60).toString().padLeft(2, '0')}:${(_codeTimer % 60).toString().padLeft(2, '0')}',
+          style: TextStyle(fontSize: 11, fontFamily: 'Courier', color: _codeTimer > 60 ? Colors.white.withValues(alpha: 0.2) : _codeTimer > 0 ? Colors.orange.withValues(alpha: 0.5) : Colors.red.withValues(alpha: 0.5))),
+        const SizedBox(height: 10),
         TextField(controller: _codeCtl, keyboardType: TextInputType.number, style: const TextStyle(color: Colors.white, fontSize: 20, letterSpacing: 8), textAlign: TextAlign.center,
           decoration: InputDecoration(hintText: '000000', hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.15), letterSpacing: 8),
             filled: true, fillColor: Colors.white.withValues(alpha: 0.05),
@@ -1540,19 +1627,19 @@ $conditions
             enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))))),
         const SizedBox(height: 16),
         SizedBox(width: double.infinity, height: 44, child: ElevatedButton(
-          onPressed: _authLoading ? null : _verifyCode,
-          style: ElevatedButton.styleFrom(backgroundColor: Colors.white.withValues(alpha: 0.1), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-          child: _authLoading ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : Text(L.tr('verify'), style: const TextStyle(letterSpacing: 1)),
+          onPressed: (_authLoading || _codeTimer <= 0) ? null : _verifyCode,
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.white.withValues(alpha: _codeTimer > 0 ? 0.1 : 0.03), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+          child: _authLoading ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : Text(_codeTimer <= 0 ? 'Expired' : L.tr('verify'), style: const TextStyle(letterSpacing: 1)),
         )),
         const SizedBox(height: 12),
-        GestureDetector(onTap: () => setState(() => _codeRequested = false), child: Text(L.tr('back'), style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.3)))),
+        GestureDetector(onTap: () => setState(() { _codeRequested = false; _codeCtl.clear(); _codeTimer = 0; }), child: Text(L.tr('back'), style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.3)))),
       ],
       const SizedBox(height: 30),
       Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        for (final lang in ['EN', 'RU', 'ZH']) GestureDetector(
-          onTap: () => _setLang(lang.toLowerCase()),
+        for (final entry in [('en', 'EN'), ('ru', 'RU'), ('zh', 'ZH')]) GestureDetector(
+          onTap: () => _setLang(entry.$1),
           child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Text(lang, style: TextStyle(fontSize: 11, color: L.lang == lang.toLowerCase() ? Colors.white : Colors.white24, fontWeight: FontWeight.bold))),
+            child: Text(entry.$2, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: L.lang == entry.$1 ? Colors.white : Colors.white24))),
         ),
       ]),
     ]))))),
@@ -1580,6 +1667,149 @@ $conditions
   }
 
 
+}
+
+// ── In-App Update Dialog (Surfshark-style) ──
+
+class _UpdateDialog extends StatefulWidget {
+  final String version, notes, downloadUrl;
+  final VoidCallback onSkip, onLater;
+  const _UpdateDialog({required this.version, required this.notes, required this.downloadUrl, required this.onSkip, required this.onLater});
+
+  @override
+  State<_UpdateDialog> createState() => _UpdateDialogState();
+}
+
+class _UpdateDialogState extends State<_UpdateDialog> {
+  bool _downloading = false;
+  double _progress = 0;
+  String _status = '';
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: const Color(0xFF0A0A0A),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
+      child: Container(
+        width: 340, padding: const EdgeInsets.all(20),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Image.asset('assets/logo.png', width: 36, height: 36),
+          const SizedBox(height: 10),
+          Text('v${widget.version}', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: 2)),
+          if (widget.notes.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(widget.notes, textAlign: TextAlign.center, style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 11, height: 1.4)),
+          ],
+          const SizedBox(height: 16),
+
+          if (_downloading) ...[
+            ClipRRect(borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(value: _progress, backgroundColor: Colors.white.withValues(alpha: 0.06),
+                valueColor: AlwaysStoppedAnimation(Colors.white.withValues(alpha: 0.8)), minHeight: 3)),
+            const SizedBox(height: 6),
+            Text(_status, style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 10)),
+          ] else ...[
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              GestureDetector(
+                onTap: widget.onLater,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
+                  decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.1)), borderRadius: BorderRadius.circular(8)),
+                  child: Text('Later', style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              GestureDetector(
+                onTap: _installUpdate,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
+                  decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                  child: const Text('Update', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ]),
+          ],
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _installUpdate() async {
+    setState(() { _downloading = true; _status = 'Downloading...'; _progress = 0; });
+
+    try {
+      final request = http.Request('GET', Uri.parse(widget.downloadUrl));
+      final response = await request.send();
+      final totalBytes = response.contentLength ?? 0;
+      var receivedBytes = 0;
+      final chunks = <List<int>>[];
+
+      await for (final chunk in response.stream) {
+        chunks.add(chunk);
+        receivedBytes += chunk.length;
+        if (totalBytes > 0) {
+          setState(() { _progress = receivedBytes / totalBytes; _status = '${(receivedBytes / 1048576).toStringAsFixed(1)} / ${(totalBytes / 1048576).toStringAsFixed(1)} MB'; });
+        }
+      }
+
+      final bytes = chunks.expand((c) => c).toList();
+      setState(() { _status = 'Installing...'; _progress = 1.0; });
+
+      if (Platform.isMacOS) {
+        // Save as ZIP, extract silently, copy to Applications — no Finder popups
+        final zipPath = '/tmp/Fogged-Update.zip';
+        final extractDir = '/tmp/Fogged-Update';
+        await File(zipPath).writeAsBytes(bytes);
+        setState(() => _status = 'Extracting...');
+
+        // Clean old extract dir
+        if (await Directory(extractDir).exists()) await Directory(extractDir).delete(recursive: true);
+        await Directory(extractDir).create();
+
+        // Unzip silently
+        final unzip = await Process.run('unzip', ['-o', '-q', zipPath, '-d', extractDir]);
+        if (unzip.exitCode == 0) {
+          // Find the .app inside
+          final appDir = await Process.run('bash', ['-c', 'find $extractDir -name "*.app" -maxdepth 2 | head -1'.replaceAll('\$extractDir', extractDir)]);
+          final appPath = appDir.stdout.toString().trim();
+          if (appPath.isNotEmpty) {
+            setState(() => _status = 'Replacing app...');
+            await Process.run('bash', ['-c', 'rm -rf /Applications/Fogged.app && cp -R "$appPath" /Applications/']);
+
+            // Cleanup update files
+            await File(zipPath).delete();
+            await Directory(extractDir).delete(recursive: true);
+
+            // Mark this version as installed so we don't prompt again
+            final p = await SharedPreferences.getInstance();
+            await p.setString('update_installed_version', widget.version);
+            setState(() => _status = 'Restarting...');
+            final script = '/tmp/fogged-relaunch.sh';
+            await File(script).writeAsString('#!/bin/bash\nsleep 2\nopen /Applications/Fogged.app\nrm -f \$0\n');
+            await Process.run('chmod', ['+x', script]);
+            Process.start('nohup', [script], mode: ProcessStartMode.detached);
+            await Future.delayed(const Duration(seconds: 1));
+            exit(0);
+          }
+        }
+        // Cleanup on failure
+        try { await File(zipPath).delete(); } catch (_) {}
+        try { await Directory(extractDir).delete(recursive: true); } catch (_) {}
+        setState(() => _status = 'Install failed');
+      } else if (Platform.isWindows) {
+        final exePath = '${Platform.environment['TEMP']}\\Fogged-Setup.exe';
+        await File(exePath).writeAsBytes(bytes);
+        setState(() => _status = 'Running installer...');
+        final p = await SharedPreferences.getInstance();
+        await p.setString('update_installed_version', widget.version);
+        Process.run(exePath, ['/S']);
+        await Future.delayed(const Duration(seconds: 2));
+        exit(0);
+      }
+    } catch (e) {
+      setState(() { _downloading = false; _status = 'Error: $e'; });
+    }
+  }
 }
 
 class _GridPainter extends CustomPainter {
@@ -1806,18 +2036,18 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             child: Column(children: [
               SwitchListTile(
                 value: _autoStart,
-                onChanged: (v) => _setAutoStart(v),
-                title: const Text('Auto-start on boot', style: TextStyle(color: Colors.white, fontSize: 13)),
-                subtitle: Text('Launch Fogged when you log in', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
+                onChanged: Platform.isMacOS ? (v) => _setAutoStart(v) : null,
+                title: Text('Auto-start on boot', style: TextStyle(color: Colors.white.withValues(alpha: Platform.isMacOS ? 1.0 : 0.3), fontSize: 13)),
+                subtitle: Text(Platform.isMacOS ? 'Launch Fogged when you log in' : 'macOS only', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
                 activeColor: Colors.white,
                 inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
               ),
               Divider(color: Colors.white.withValues(alpha: 0.06), height: 1),
               SwitchListTile(
                 value: _killSwitch,
-                onChanged: (v) => _setKillSwitch(v),
-                title: const Text('Kill switch', style: TextStyle(color: Colors.white, fontSize: 13)),
-                subtitle: Text('Block internet if VPN disconnects', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
+                onChanged: Platform.isMacOS ? (v) => _setKillSwitch(v) : null,
+                title: Text('Kill switch', style: TextStyle(color: Colors.white.withValues(alpha: Platform.isMacOS ? 1.0 : 0.3), fontSize: 13)),
+                subtitle: Text(Platform.isMacOS ? 'Block internet if VPN disconnects' : 'macOS only', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
                 activeColor: Colors.white,
                 inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
               ),
@@ -1860,22 +2090,49 @@ class _SettingsScreenState extends State<_SettingsScreen> {
 
           // Language
           Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            for (final lang in ['EN', 'RU', 'ZH']) Padding(
+            for (final entry in [('en', 'EN'), ('ru', 'RU'), ('zh', 'ZH')]) Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: GestureDetector(
                 onTap: () async {
-                  L.setLang(lang.toLowerCase());
+                  L.setLang(entry.$1);
                   final prefs = await SharedPreferences.getInstance();
-                  await prefs.setString('lang', lang.toLowerCase());
+                  await prefs.setString('lang', entry.$1);
                   setState(() {});
                 },
-                child: Text(lang, style: TextStyle(fontSize: 12, fontWeight: L.lang == lang.toLowerCase() ? FontWeight.bold : FontWeight.normal, color: L.lang == lang.toLowerCase() ? Colors.white : Colors.white30)),
+                child: Text(entry.$2, style: TextStyle(fontSize: 13, fontWeight: L.lang == entry.$1 ? FontWeight.bold : FontWeight.normal, color: L.lang == entry.$1 ? Colors.white : Colors.white30)),
               ),
             ),
           ]),
           const SizedBox(height: 16),
 
           // Logout
+          // Check for updates button
+          Center(child: GestureDetector(
+            onTap: () async {
+              try {
+                final resp = await http.get(Uri.parse('${widget.apiBase}/version'));
+                if (resp.statusCode == 200) {
+                  final j = jsonDecode(resp.body);
+                  final latest = j['version'] as String? ?? '';
+                  final info = await PackageInfo.fromPlatform();
+                  if (latest == info.version || latest.isEmpty) {
+                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('You\'re on the latest version')));
+                  } else {
+                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('v$latest available — restart app to update')));
+                    // Clear the dismissed/installed flags so the update dialog shows on next launch
+                    final p = await SharedPreferences.getInstance();
+                    await p.remove('update_dismissed_at');
+                    await p.remove('update_installed_version');
+                  }
+                }
+              } catch (_) {
+                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not check for updates')));
+              }
+            },
+            child: Text('Check for updates', style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.3))),
+          )),
+          const SizedBox(height: 16),
+
           Center(child: GestureDetector(
             onTap: widget.onLogout,
             child: Text(L.tr('logout'), style: TextStyle(fontSize: 12, color: Colors.red.shade300)),
