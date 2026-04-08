@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "Fogged" "\0"
-            VALUE "FileDescription", "Fogged" "\0"
+            VALUE "CompanyName", "com.fogged" "\0"
+            VALUE "FileDescription", "orcax" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "fogged" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2023 Fogged.com. All rights reserved." "\0"
-            VALUE "OriginalFilename", "Fogged.exe" "\0"
-            VALUE "ProductName", "fogged" "\0"
+            VALUE "InternalName", "orcax" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 com.fogged. All rights reserved." "\0"
+            VALUE "OriginalFilename", "orcax.exe" "\0"
+            VALUE "ProductName", "orcax" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

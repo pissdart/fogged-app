@@ -1,28 +1,24 @@
 # Fogged VPN
 
-Приватный VPN клиент. Невидимый трафик, быстрые серверы, без логов.
+Secure, fast VPN for Russia, China & beyond.
 
-## Скачать
+## Download
 
-| Платформа | Ссылка |
-|-----------|--------|
-| Android | [Fogged-Android.apk](https://github.com/pissdart/fogged-app/releases/download/v1.0.0/Fogged-Android.apk) |
-| Windows | [Fogged-Setup.exe](https://github.com/pissdart/fogged-app/releases/download/v1.0.0/Fogged-Setup.exe) |
-| macOS | [Fogged-macOS.dmg](https://github.com/pissdart/fogged-app/releases/download/v1.0.0/Fogged-macOS.dmg) |
+- [macOS](https://github.com/pissdart/fogged-app/releases/latest)
+- [Windows](https://github.com/pissdart/fogged-app/releases/latest)
+- [Android APK](https://github.com/pissdart/fogged-app/releases/latest)
 
-## Возможности
+## Features
 
-- VLESS + Reality
-- Hysteria2
-- CDN/XHTTP
-- Relay через Россию
-- Автовыбор сервера
-- TUN режим
-
-## Сайт
-
-[fogged.net](https://fogged.net)
+- **OrcaX Pro Max**: 45+ Mbps with post-quantum QUIC encryption
+- **3 protocols**: VLESS+Reality, Hysteria2, OrcaX Pro Max, OrcaX VLESS
+- **Anti-censorship**: Bypasses DPI, TSPU, GFW
+- **Kill switch, split tunnel, whitelist mode**
+- **Speed test suite**: Tests all protocols x servers
+- **Site block checker**: 1.3M+ Russian blocked domains in DB
+- **In-app support, auto-update, i18n (EN/RU/ZH)**
 
 ## Telegram
 
-[@foggedvpnbot](https://t.me/foggedvpnbot)
+- Bot: [@foggedvpnbot](https://t.me/foggedvpnbot)
+- Channel: [@foggedvpn](https://t.me/foggedvpn)

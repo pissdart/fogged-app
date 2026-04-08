@@ -1,6 +1,0 @@
-<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M32 4L8 16v16c0 14.4 10.24 27.84 24 32 13.76-4.16 24-17.6 24-32V16L32 4z" fill="currentColor" opacity="0.9"/>
-<path d="M32 12L14 21v12c0 10.8 7.68 20.88 18 24 10.32-3.12 18-13.2 18-24V21L32 12z" fill="currentColor" opacity="0.15"/>
-<circle cx="32" cy="30" r="8" fill="currentColor" opacity="0.6"/>
-<circle cx="32" cy="30" r="4" fill="currentColor"/>
-</svg>

@@ -1,42 +1,28 @@
 import Cocoa
 import FlutterMacOS
-import window_manager
-import LaunchAtLogin
 
-class MainFlutterWindow: NSWindow {
+class MainFlutterWindow: NSWindow, NSWindowDelegate {
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
     self.contentViewController = flutterViewController
     self.setFrame(windowFrame, display: true)
+    self.delegate = self
 
-
- // Add FlutterMethodChannel platform code
-    FlutterMethodChannel(
-      name: "launch_at_startup", binaryMessenger: flutterViewController.engine.binaryMessenger
-    )
-    .setMethodCallHandler { (_ call: FlutterMethodCall, result: @escaping FlutterResult) in
-      switch call.method {
-      case "launchAtStartupIsEnabled":
-        result(LaunchAtLogin.isEnabled)
-      case "launchAtStartupSetEnabled":
-        if let arguments = call.arguments as? [String: Any] {
-          LaunchAtLogin.isEnabled = arguments["setEnabledValue"] as! Bool
-        }
-        result(nil)
-      default:
-        result(FlutterMethodNotImplemented)
-      }
-    }
-    //
     RegisterGeneratedPlugins(registry: flutterViewController)
 
     super.awakeFromNib()
   }
 
-  // window manager hidden at launch
-  override public func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
-    super.order(place, relativeTo: otherWin)
-    hiddenWindowAtLaunch()
+  func windowShouldClose(_ sender: NSWindow) -> Bool {
+    // Hide window and dock icon — app lives in menu bar
+    self.orderOut(nil)
+    NSApp.setActivationPolicy(.accessory) // Hide from dock
+    return false
+  }
+
+  override func makeKeyAndOrderFront(_ sender: Any?) {
+    NSApp.setActivationPolicy(.regular) // Show in dock when window visible
+    super.makeKeyAndOrderFront(sender)
   }
 }

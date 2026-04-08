@@ -1,38 +1,61 @@
 import Cocoa
 import FlutterMacOS
 
-import UserNotifications
 @main
 class AppDelegate: FlutterAppDelegate {
+  var statusItem: NSStatusItem?
+  var isConnected = false
+
+  override func applicationDidFinishLaunching(_ notification: Notification) {
+    // Create menu bar status item
+    statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    updateStatusIcon()
+
+    let menu = NSMenu()
+    menu.addItem(NSMenuItem(title: "Show Fogged", action: #selector(showWindow), keyEquivalent: ""))
+    menu.addItem(NSMenuItem.separator())
+    menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
+    statusItem?.menu = menu
+
+    // Listen for VPN status updates from Flutter
+    if let controller = mainFlutterWindow?.contentViewController as? FlutterViewController {
+      let channel = FlutterMethodChannel(name: "com.fogged.vpn/tray", binaryMessenger: controller.engine.binaryMessenger)
+      channel.setMethodCallHandler { [weak self] (call, result) in
+        if call.method == "setConnected" {
+          self?.isConnected = call.arguments as? Bool ?? false
+          self?.updateStatusIcon()
+          result(nil)
+        } else {
+          result(FlutterMethodNotImplemented)
+        }
+      }
+    }
+  }
+
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-    // https://github.com/leanflutter/window_manager/issues/214
+    // Don't quit when window closes — minimize to tray
     return false
   }
-  
+
   override func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
     return true
   }
-  override func applicationDidFinishLaunching(_ aNotification: Notification) {
-        // Request notification authorization
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge]) { granted, error in
-            if let error = error {
-                print("Error requesting notification authorization: \(error)")
-            }
-        }
+
+  func updateStatusIcon() {
+    if let button = statusItem?.button {
+      button.title = isConnected ? "F●" : "F○"
     }
+  }
 
+  @objc func showWindow() {
+    NSApp.setActivationPolicy(.regular) // Show in dock
+    if let window = mainFlutterWindow {
+      window.makeKeyAndOrderFront(nil)
+      NSApp.activate(ignoringOtherApps: true)
+    }
+  }
 
-  // // window manager restore from dock: https://leanflutter.dev/blog/click-dock-icon-to-restore-after-closing-the-window
-  // override func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-  //     if !flag {
-  //         for window in NSApp.windows {
-  //             if !window.isVisible {
-  //                 window.setIsVisible(true)
-  //             }
-  //             window.makeKeyAndOrderFront(self)
-  //             NSApp.activate(ignoringOtherApps: true)
-  //         }
-  //     }
-  //     return true
-  // }
+  @objc func quitApp() {
+    NSApp.terminate(nil)
+  }
 }
