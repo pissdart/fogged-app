@@ -17,7 +17,8 @@ class L {
   static final _t = {
     'en': {
       'secure_vpn': 'Secure VPN',
-      'enter_telegram': 'Enter your Telegram username or User ID',
+      'enter_telegram': 'Enter your Telegram User ID',
+      'userid_help': 'Find your User ID in @foggedvpnbot → Settings',
       'send_code': 'Send Code',
       'enter_code': 'Enter the code sent to your Telegram',
       'verify': 'Verify',
@@ -84,7 +85,8 @@ class L {
     },
     'ru': {
       'secure_vpn': 'Безопасный VPN',
-      'enter_telegram': 'Введите ваш Telegram логин или User ID',
+      'enter_telegram': 'Введите ваш Telegram User ID',
+      'userid_help': 'Найдите User ID в @foggedvpnbot → Настройки',
       'send_code': 'Отправить код',
       'enter_code': 'Введите код из Telegram',
       'verify': 'Подтвердить',
@@ -151,7 +153,8 @@ class L {
     },
     'zh': {
       'secure_vpn': '安全VPN',
-      'enter_telegram': '输入Telegram用户名或User ID',
+      'enter_telegram': '输入您的 Telegram User ID',
+      'userid_help': '在 @foggedvpnbot → 设置 中查找 User ID',
       'send_code': '发送验证码',
       'enter_code': '输入Telegram发送的验证码',
       'verify': '验证',
@@ -924,6 +927,18 @@ $conditions
     if (!_connected || _testing) return;
     setState(() { _testing = true; _testResult = 'Testing...'; });
     try {
+      if (Platform.isAndroid || Platform.isIOS) {
+        // Mobile: use Dart HTTP directly (VPN routes traffic)
+        final start = DateTime.now();
+        final resp = await http.get(Uri.parse('https://hel1-speed.hetzner.com/100MB.bin'),
+          headers: {'Range': 'bytes=0-5242879'}).timeout(const Duration(seconds: 30));
+        final elapsed = DateTime.now().difference(start);
+        final bytes = resp.bodyBytes.length;
+        final mbps = (bytes * 8) / (elapsed.inMilliseconds / 1000) / 1000000;
+        final latencyMs = elapsed.inMilliseconds > 0 ? (elapsed.inMilliseconds * 0.1).round() : 0;
+        if (mounted) setState(() { _testing = false; _testResult = '${mbps.toStringAsFixed(1)} Mbps | ${latencyMs}ms | ${_fmtBytes(bytes)} in ${(elapsed.inMilliseconds / 1000).toStringAsFixed(1)}s'; });
+      } else {
+      // Desktop: use curl through SOCKS proxy
       final result = await Process.run('curl', [
         '-x', 'socks5h://127.0.0.1:1080', '-so', '/dev/null',
         '-w', '%{speed_download}|%{size_download}|%{time_total}|%{time_starttransfer}',
@@ -939,16 +954,26 @@ $conditions
         final latencyMs = (ttfb * 1000).round();
         if (mounted) setState(() { _testing = false; _testResult = '${mbps.toStringAsFixed(1)} Mbps | ${latencyMs}ms | ${_fmtBytes(bytes)} in ${totalTime.toStringAsFixed(1)}s'; });
       } else {
-        if (mounted) setState(() { _testing = false; _testResult = 'Failed'; });
+        if (mounted) setState(() { _testing = false; _testResult = L.tr('failed'); });
       }
-    } catch (e) { if (mounted) setState(() { _testing = false; _testResult = 'Error: $e'; }); }
+      } // close desktop else
+    } catch (e) { if (mounted) setState(() { _testing = false; _testResult = L.tr('failed'); }); _addLog('speed test: $e'); }
   }
 
   // ── Helpers ──
 
-  void _showError(String msg) { if (!mounted) return; ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-    content: GestureDetector(onTap: () { Clipboard.setData(ClipboardData(text: msg)); }, child: Text(msg)),
-    backgroundColor: Colors.red.shade900, duration: const Duration(seconds: 5))); }
+  void _showError(String msg) {
+    if (!mounted) return;
+    _addLog('ERROR: $msg');
+    // Hide technical details from regular users
+    final userMsg = (_userRole == 'admin' || _userRole == 'supermod') ? msg
+        : msg.contains('ProcessException') ? L.tr('failed')
+        : msg.contains('curl') ? L.tr('failed')
+        : msg.contains('No such file') ? L.tr('failed')
+        : msg.length > 80 ? '${msg.substring(0, 80)}...' : msg;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(userMsg), backgroundColor: Colors.red.shade900, duration: const Duration(seconds: 3)));
+  }
   void _showMsg(String msg) { if (!mounted) return; ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 3))); }
   String _fmtBytes(int b) { if (b < 1024) return '$b B'; if (b < 1048576) return '${(b / 1024).toStringAsFixed(0)} KB'; if (b < 1073741824) return '${(b / 1048576).toStringAsFixed(1)} MB'; return '${(b / 1073741824).toStringAsFixed(2)} GB'; }
 
@@ -1519,12 +1544,20 @@ $conditions
     setState(() { _checkingSites = true; _siteResults = []; });
     for (final site in _checkedSites) {
       try {
-        final result = await Process.run('curl', [
-          '-x', 'socks5h://127.0.0.1:1080', '-so', '/dev/null',
-          '-w', '%{http_code}', 'https://$site/', '--max-time', '8',
-        ]);
-        final code = int.tryParse(result.stdout.toString().trim()) ?? 0;
-        final working = code >= 200 && code < 400;
+        bool working;
+        if (Platform.isAndroid || Platform.isIOS) {
+          // Mobile: use Dart HTTP directly (VPN handles routing)
+          final resp = await http.get(Uri.parse('https://$site/')).timeout(const Duration(seconds: 8));
+          working = resp.statusCode >= 200 && resp.statusCode < 400;
+        } else {
+          // Desktop: use curl through SOCKS proxy
+          final result = await Process.run('curl', [
+            '-x', 'socks5h://127.0.0.1:1080', '-so', '/dev/null',
+            '-w', '%{http_code}', 'https://$site/', '--max-time', '8',
+          ]);
+          final code = int.tryParse(result.stdout.toString().trim()) ?? 0;
+          working = code >= 200 && code < 400;
+        }
         setState(() => _siteResults.add({'site': site, 'working': working}));
       } catch (_) {
         setState(() => _siteResults.add({'site': site, 'working': false}));
@@ -1608,7 +1641,9 @@ $conditions
             filled: true, fillColor: Colors.white.withValues(alpha: 0.05),
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
             enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))))),
-        const SizedBox(height: 16),
+        const SizedBox(height: 8),
+        Text(L.tr('userid_help'), style: TextStyle(fontSize: 10, color: Colors.white.withValues(alpha: 0.2), height: 1.4), textAlign: TextAlign.center),
+        const SizedBox(height: 12),
         SizedBox(width: double.infinity, height: 44, child: ElevatedButton(
           onPressed: _authLoading ? null : _requestCode,
           style: ElevatedButton.styleFrom(backgroundColor: Colors.white.withValues(alpha: 0.1), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
@@ -1936,10 +1971,10 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           // Account section
           _sectionTitle(L.tr('account')),
           _card([
-            _infoRow('Account', widget.accountNumber),
-            _infoRow('Status', widget.subStatus),
-            _infoRow(L.tr('subscription'), '${widget.daysLeft} ${L.tr('days_left')}'),
-            if (widget.subEndsAt.isNotEmpty) _infoRow('Expires', widget.subEndsAt.split('T').first),
+            _infoRow(L.tr('account'), widget.accountNumber.isEmpty ? '--' : widget.accountNumber),
+            _infoRow('Status', widget.subStatus.isEmpty ? '--' : widget.subStatus),
+            _infoRow(L.tr('subscription'), widget.daysLeft == '?' ? '--' : '${widget.daysLeft} ${L.tr('days_left')}'),
+            if (widget.subEndsAt.isNotEmpty) _infoRow(L.tr('expired'), widget.subEndsAt.split('T').first),
           ]),
           const SizedBox(height: 8),
           SizedBox(width: double.infinity, height: 40, child: ElevatedButton(
@@ -1952,8 +1987,8 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           // Referral section
           _sectionTitle(L.tr('referrals')),
           _card([
-            _infoRow('Code', widget.referralCode),
-            _infoRow('Total', '${widget.totalReferrals}'),
+            _infoRow(L.tr('referral_link'), widget.referralCode.isEmpty ? '--' : widget.referralCode),
+            _infoRow(L.tr('referrals'), '${widget.totalReferrals}'),
             _infoRow(L.tr('earnings'), '\$${widget.referralEarnings.toStringAsFixed(2)}'),
           ]),
           const SizedBox(height: 8),
