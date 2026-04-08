@@ -313,7 +313,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiBase = 'https://dl.fogged.net';
-  String _appVersion = '1.2.0'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.3.0'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -324,7 +324,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       return null;
     });
     // Load version from package info (single source of truth: pubspec.yaml)
-    PackageInfo.fromPlatform().then((info) => _appVersion = info.version);
+    PackageInfo.fromPlatform().then((info) { if (mounted) setState(() => _appVersion = info.version); });
     _loadAuth();
     // Check for updates on every app start (all platforms)
     Future.delayed(const Duration(seconds: 2), _checkForUpdate);
