@@ -33,7 +33,6 @@ class AppDelegate: FlutterAppDelegate {
   }
 
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-    // Don't quit when window closes — minimize to tray
     return false
   }
 
@@ -48,7 +47,7 @@ class AppDelegate: FlutterAppDelegate {
   }
 
   @objc func showWindow() {
-    NSApp.setActivationPolicy(.regular) // Show in dock
+    NSApp.setActivationPolicy(.regular)
     if let window = mainFlutterWindow {
       window.makeKeyAndOrderFront(nil)
       NSApp.activate(ignoringOtherApps: true)

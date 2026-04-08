@@ -316,7 +316,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiBase = 'https://dl.fogged.net';
-  String _appVersion = '1.3.0'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.4.0'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
