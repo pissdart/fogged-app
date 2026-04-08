@@ -1,0 +1,13 @@
+[package]
+name = "orcax-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "VLESS v0 protocol parser with FPv1 extensions — UDP, MUX, traffic padding"
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+hex = "0.4"
+tokio = { version = "1", features = ["io-util", "macros", "rt", "sync"] }
+tracing = "0.1"
+rand = "0.8"

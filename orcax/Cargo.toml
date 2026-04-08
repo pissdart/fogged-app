@@ -1,0 +1,6 @@
+[workspace]
+members = ["protocol", "transport", "client"]
+resolver = "2"
+
+[patch.crates-io]
+rustls = { path = "rustls-fork/rustls" }

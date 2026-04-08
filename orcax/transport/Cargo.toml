@@ -1,0 +1,33 @@
+[package]
+name = "orcax-transport"
+version = "0.1.0"
+edition = "2021"
+description = "Transport layer — Reality TLS, WebSocket, HTTP/2, TLS fingerprint mimicry"
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["net", "io-util", "rt", "time", "macros"] }
+tracing = "0.1"
+
+# Crypto for Reality TLS
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+hmac = "0.12"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+
+# Certificate generation
+rcgen = "0.12"
+
+# Utilities
+hex = "0.4"
+base64 = "0.22"
+bytes = "1"
+chacha20poly1305 = "0.10"
+
+# TLS — patched via workspace [patch.crates-io] to use rustls-reality
+rustls = "0.22"
+tokio-rustls = "0.25"
+rustls-pki-types = "1"

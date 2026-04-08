@@ -1,0 +1,172 @@
+name: Build Apps
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build-windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            orcax/target
+          key: win-cargo-${{ hashFiles('orcax/Cargo.lock') }}
+
+      - name: Build orcax-connect
+        working-directory: orcax
+        run: cargo build --release --bin orcax-connect
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build Windows app
+        run: |
+          flutter pub get
+          flutter build windows --release
+
+      - name: Bundle
+        shell: bash
+        run: |
+          cp orcax/target/release/orcax-connect.exe build/windows/x64/runner/Release/
+          cd build/windows/x64/runner && 7z a "$GITHUB_WORKSPACE/Fogged-Windows.zip" Release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Fogged-Windows.zip
+
+  build-android:
+    name: Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26d
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            orcax/target
+          key: android-cargo-${{ hashFiles('orcax/Cargo.lock') }}
+
+      - name: Build orcax-connect ARM64
+        env:
+          CC_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang
+          AR_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang
+        working-directory: orcax
+        run: cargo build --release --target aarch64-linux-android --bin orcax-connect
+
+      - name: Prepare native libs
+        run: |
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp orcax/target/aarch64-linux-android/release/orcax-connect android/app/src/main/jniLibs/arm64-v8a/liborcax_connect.so
+          curl -sL "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-arm64.zip" -o /tmp/t2s.zip
+          unzip -o /tmp/t2s.zip -d /tmp/t2s/
+          cp /tmp/t2s/tun2socks-linux-arm64 android/app/src/main/jniLibs/arm64-v8a/libtun2socks.so
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build APK
+        run: |
+          flutter pub get
+          flutter build apk --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+  build-macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            orcax/target
+          key: mac-cargo-${{ hashFiles('orcax/Cargo.lock') }}
+
+      - name: Build orcax-connect
+        working-directory: orcax
+        run: cargo build --release --bin orcax-connect
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build macOS app
+        run: |
+          flutter pub get
+          flutter build macos --release
+
+      - name: Bundle
+        run: |
+          cp orcax/target/release/orcax-connect "build/macos/Build/Products/Release/Fogged.app/Contents/MacOS/"
+          brew install create-dmg || true
+          create-dmg --volname "Fogged VPN" --icon-size 100 --icon "Fogged.app" 150 190 --app-drop-link 450 190 --hide-extension "Fogged.app" --no-internet-enable Fogged-macOS.dmg "build/macos/Build/Products/Release/Fogged.app" || true
+          cd "build/macos/Build/Products/Release" && zip -r "$GITHUB_WORKSPACE/Fogged-macOS.zip" Fogged.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            Fogged-macOS.dmg
+            Fogged-macOS.zip
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-android, build-macos]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload to server
+        env:
+          SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/key && chmod 600 ~/.ssh/key
+          ssh-keyscan -H 204.168.220.188 >> ~/.ssh/known_hosts 2>/dev/null
+
+          scp -i ~/.ssh/key artifacts/windows/Fogged-Windows.zip root@204.168.220.188:/opt/fogged/downloads/
+          scp -i ~/.ssh/key artifacts/android/app-release.apk root@204.168.220.188:/opt/fogged/downloads/Fogged-Android.apk
+          scp -i ~/.ssh/key artifacts/macos/Fogged-macOS.dmg root@204.168.220.188:/opt/fogged/downloads/ || true
+          scp -i ~/.ssh/key artifacts/macos/Fogged-macOS.zip root@204.168.220.188:/opt/fogged/downloads/
+
+          echo "All deployed"
+      - run: rm -f ~/.ssh/key
+        if: always()
