@@ -1840,6 +1840,17 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         Process.run(exePath, ['/S']);
         await Future.delayed(const Duration(seconds: 2));
         exit(0);
+      } else if (Platform.isAndroid) {
+        // Save APK and trigger Android package installer
+        final dir = Directory('/storage/emulated/0/Download');
+        final apkPath = '${dir.path}/Fogged-Update.apk';
+        await File(apkPath).writeAsBytes(bytes);
+        setState(() => _status = 'Opening installer...');
+        final p = await SharedPreferences.getInstance();
+        await p.setString('update_installed_version', widget.version);
+        // Use platform channel to trigger install intent
+        const channel = MethodChannel('com.fogged.vpn/android');
+        await channel.invokeMethod('installApk', apkPath);
       }
     } catch (e) {
       setState(() { _downloading = false; _status = 'Error: $e'; });
