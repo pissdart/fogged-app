@@ -316,7 +316,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiBase = 'https://dl.fogged.net';
-  String _appVersion = '1.4.0'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.4.1'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -445,7 +445,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       final j = jsonDecode(resp.body);
       final latest = j['version'] as String? ?? _appVersion;
       final notes = j['notes'] as String? ?? 'Improvements and bug fixes.';
-      if (latest == _appVersion || latest == skippedVersion || latest == installedVersion) return;
+      // Only update if server version is strictly NEWER
+      if (!_isNewer(latest, _appVersion) || latest == skippedVersion || latest == installedVersion) return;
 
       final downloadUrl = Platform.isMacOS ? (j['download_macos'] as String? ?? '')
           : Platform.isWindows ? (j['download_windows'] as String? ?? '')
@@ -464,6 +465,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         }),
       );
     } catch (_) {}
+  }
+
+  /// Compare semver: returns true if a > b
+  bool _isNewer(String a, String b) {
+    final ap = a.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+    final bp = b.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+    while (ap.length < 3) ap.add(0);
+    while (bp.length < 3) bp.add(0);
+    for (var i = 0; i < 3; i++) {
+      if (ap[i] > bp[i]) return true;
+      if (ap[i] < bp[i]) return false;
+    }
+    return false;
   }
 
   String get _daysLeft {
@@ -2161,8 +2175,14 @@ class _SettingsScreenState extends State<_SettingsScreen> {
                   final j = jsonDecode(resp.body);
                   final latest = j['version'] as String? ?? '';
                   final info = await PackageInfo.fromPlatform();
-                  if (latest == info.version || latest.isEmpty) {
-                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('You\'re on the latest version')));
+                  // Compare: only show update if server version is newer
+                  final ap = latest.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+                  final bp = info.version.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+                  while (ap.length < 3) ap.add(0);
+                  while (bp.length < 3) bp.add(0);
+                  final isNewer = ap[0] > bp[0] || (ap[0] == bp[0] && ap[1] > bp[1]) || (ap[0] == bp[0] && ap[1] == bp[1] && ap[2] > bp[2]);
+                  if (!isNewer || latest.isEmpty) {
+                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('v${info.version} — latest version')));
                   } else {
                     if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('v$latest available — restart app to update')));
                     // Clear the dismissed/installed flags so the update dialog shows on next launch
