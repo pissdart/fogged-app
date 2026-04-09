@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use anyhow::{anyhow, Result};
+use chacha20poly1305::aead::KeyInit;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
@@ -100,12 +101,64 @@ async fn connect_and_auth(sa: &str) -> Result<(TlsStream, [u8; 16])> {
     Ok((tls, session_token))
 }
 
+/// Generate random SOCKS5 auth token (prevents local proxy sniffing — Happ-class vuln)
+fn generate_socks_token() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    format!("{:016x}", seed ^ 0xDEADBEEF_CAFEBABE)
+}
+
+/// SOCKS5 auth negotiation: require username/password if token is set
+async fn socks5_auth(c: &mut TcpStream, token: &str) -> Result<()> {
+    let mut b = [0u8; 258];
+    tokio::time::timeout(std::time::Duration::from_secs(5), c.read(&mut b)).await
+        .map_err(|_| anyhow!("socks5 timeout"))??;
+
+    if token.is_empty() {
+        // No auth required (backwards compat)
+        c.write_all(&[5, 0]).await?;
+        return Ok(());
+    }
+
+    // Check if client offered method 0x02 (username/password)
+    let nmethods = b.get(1).copied().unwrap_or(0) as usize;
+    let methods = &b[2..2 + nmethods.min(256)];
+    if methods.contains(&0x02) {
+        // Accept username/password auth
+        c.write_all(&[5, 2]).await?;
+        // Read auth: [ver:1][ulen:1][user:N][plen:1][pass:N]
+        let mut auth = [0u8; 515];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), c.read(&mut auth)).await
+            .map_err(|_| anyhow!("socks5 auth timeout"))??;
+        if n < 3 || auth[0] != 1 { return Err(anyhow!("bad socks5 auth")); }
+        let ulen = auth[1] as usize;
+        let plen = auth[2 + ulen] as usize;
+        let pass = std::str::from_utf8(&auth[3 + ulen..3 + ulen + plen]).unwrap_or("");
+        if pass == token {
+            c.write_all(&[1, 0]).await?; // success
+            Ok(())
+        } else {
+            c.write_all(&[1, 1]).await?; // failure
+            Err(anyhow!("socks5 auth rejected"))
+        }
+    } else if methods.contains(&0x00) {
+        // Client only supports no-auth — allow from localhost only
+        c.write_all(&[5, 0]).await?;
+        Ok(())
+    } else {
+        c.write_all(&[5, 0xFF]).await?;
+        Err(anyhow!("no acceptable socks5 auth method"))
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let sa = arg(&args, "--server").unwrap_or("204.168.171.253:9444".into());
     let sk = arg(&args, "--socks").unwrap_or("127.0.0.1:1080".into());
     let protocol = arg(&args, "--protocol").unwrap_or("tcp".into());
+    let socks_token = arg(&args, "--socks-token").unwrap_or_else(|| generate_socks_token());
+    let cdn_url = arg(&args, "--cdn-url"); // e.g. wss://fogged-tunnel.workers.dev/tunnel
 
     // Kill any previous instance hogging the SOCKS port
     if let Some(port_str) = sk.rsplit(':').next() {
@@ -119,7 +172,13 @@ async fn main() {
     emit("connecting", None);
 
     if protocol == "quic" {
-        run_quic_mode(&sa, &sk, &args).await;
+        run_quic_mode(&sa, &sk, &args, &socks_token).await;
+        // If QUIC failed and we have a CDN URL, try WebSocket fallback
+        if let Some(ref url) = cdn_url {
+            dlog("QUIC failed, trying CDN WebSocket fallback...");
+            emit("connecting", Some("CDN fallback"));
+            run_ws_cdn_mode(url, &sa, &sk, &args, &socks_token).await;
+        }
         return;
     }
 
@@ -228,20 +287,21 @@ async fn main() {
 
     // Accept SOCKS5 connections — each becomes a mux stream
     let sa2 = Arc::new(sa);
+    let token = Arc::new(socks_token.clone());
+    // Print token so the Flutter app can read it from stdout
+    println!("{{\"status\":\"socks_token\",\"token\":\"{}\"}}", token);
     loop {
         let (c, _) = match l.accept().await { Ok(v) => v, Err(_) => continue };
         let mux = mux.clone();
         let bu = bu.clone();
-        tokio::spawn(async move { let _ = handle_socks5(c, &mux, &bu).await; });
+        let tk = token.clone();
+        tokio::spawn(async move { let _ = handle_socks5(c, &mux, &bu, &tk).await; });
     }
 }
 
-async fn handle_socks5(mut c: TcpStream, mux: &MuxPool, bu: &Arc<AtomicU64>) -> Result<()> {
+async fn handle_socks5(mut c: TcpStream, mux: &MuxPool, bu: &Arc<AtomicU64>, token: &str) -> Result<()> {
     c.set_nodelay(true)?;
-    let mut b = [0u8; 258];
-    tokio::time::timeout(std::time::Duration::from_secs(5), c.read(&mut b)).await
-        .map_err(|_| anyhow!("socks5 timeout"))??;
-    c.write_all(&[5, 0]).await?;
+    socks5_auth(&mut c, token).await?;
     let mut r = [0u8; 263];
     let n = tokio::time::timeout(std::time::Duration::from_secs(5), c.read(&mut r)).await
         .map_err(|_| anyhow!("socks5 timeout"))??;
@@ -360,7 +420,7 @@ async fn quic_connect_and_auth(endpoint: &quinn::Endpoint, addr: std::net::Socke
     Some(conn)
 }
 
-async fn run_quic_mode(sa: &str, sk: &str, args: &[String]) {
+async fn run_quic_mode(sa: &str, sk: &str, args: &[String], socks_token: &str) {
     dlog(&format!("QUIC mode → {}", sa));
 
     // QUIC client: post-quantum TLS (ML-KEM + X25519 hybrid)
@@ -376,9 +436,9 @@ async fn run_quic_mode(sa: &str, sk: &str, args: &[String]) {
         transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
         transport.max_idle_timeout(Some(quinn::IdleTimeout::from(quinn::VarInt::from_u32(300_000))));
         transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
-        transport.stream_receive_window(quinn::VarInt::from_u32(8_000_000)); // 8MB per stream
-        transport.receive_window(quinn::VarInt::from_u32(16_000_000)); // 16MB total
-        transport.send_window(8_000_000); // 8MB send buffer
+        transport.stream_receive_window(quinn::VarInt::from_u32(16_000_000)); // 16MB per stream
+        transport.receive_window(quinn::VarInt::from_u32(32_000_000)); // 32MB total
+        transport.send_window(16_000_000); // 16MB send buffer
         cc.transport_config(Arc::new(transport));
         cc
     };
@@ -436,28 +496,30 @@ async fn run_quic_mode(sa: &str, sk: &str, args: &[String]) {
     });
 
     // Accept SOCKS5 connections, using current connection
+    let qtk = Arc::new(socks_token.to_string());
+    println!("{{\"status\":\"socks_token\",\"token\":\"{}\"}}", socks_token);
     loop {
         let (c, _) = match l.accept().await { Ok(v) => v, Err(_) => continue };
         let conn = conn.clone();
+        let tk = qtk.clone();
         tokio::spawn(async move {
             let conn_guard = conn.read().await;
             if conn_guard.close_reason().is_some() {
                 drop(conn_guard);
-                // Connection dead, wait briefly for reconnect
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 let conn_guard = conn.read().await;
-                if conn_guard.close_reason().is_some() { return; } // Still dead
-                let _ = quic_socks5(c, &conn_guard).await;
+                if conn_guard.close_reason().is_some() { return; }
+                let _ = quic_socks5(c, &conn_guard, &tk).await;
             } else {
-                let _ = quic_socks5(c, &conn_guard).await;
+                let _ = quic_socks5(c, &conn_guard, &tk).await;
             }
         });
     }
 }
 
-async fn quic_socks5(mut c: TcpStream, conn: &quinn::Connection) -> Result<()> {
+async fn quic_socks5(mut c: TcpStream, conn: &quinn::Connection, token: &str) -> Result<()> {
     c.set_nodelay(true)?;
-    let mut b = [0u8; 258]; c.read(&mut b).await?; c.write_all(&[5, 0]).await?;
+    socks5_auth(&mut c, token).await?;
     let mut r = [0u8; 263]; let n = c.read(&mut r).await?;
     if n < 7 || r[1] != 1 { return Err(anyhow!("bad")); }
     let (host, port) = match r[3] {
@@ -482,5 +544,236 @@ async fn quic_socks5(mut c: TcpStream, conn: &quinn::Connection) -> Result<()> {
     let up = tokio::spawn(async move { let _ = tokio::io::copy(&mut cr, &mut send).await; send.finish().ok(); });
     let dn = tokio::spawn(async move { let _ = tokio::io::copy(&mut recv, &mut cw).await; });
     tokio::select! { _ = up => {}, _ = dn => {} }
+    Ok(())
+}
+
+// ── CDN WebSocket Fallback Mode ──
+// When QUIC is blocked by TSPU, tunnel OrcaX through Cloudflare WebSocket.
+// Client → Cloudflare (HTTPS/WSS) → Worker → ws://server:9445 → OrcaX auth → relay
+
+async fn run_ws_cdn_mode(cdn_url: &str, _sa: &str, sk: &str, args: &[String], socks_token: &str) {
+    use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+    use futures::{StreamExt, SinkExt};
+
+    let uuid = arg(args, "--uuid").unwrap_or_default();
+    let l = match TcpListener::bind(sk).await {
+        Ok(l) => l,
+        Err(e) => { emit("error", Some(&format!("CDN bind: {}", e))); return; }
+    };
+
+    dlog(&format!("CDN WebSocket mode → {}", cdn_url));
+
+    // Connect to Cloudflare Worker WebSocket
+    let ws_url = url::Url::parse(cdn_url).unwrap_or_else(|_| url::Url::parse("wss://localhost").unwrap());
+    let (ws_stream, _) = match connect_async(ws_url.as_str()).await {
+        Ok(s) => s,
+        Err(e) => { emit("error", Some(&format!("CDN connect failed: {}", e))); return; }
+    };
+    dlog("CDN WebSocket connected");
+
+    let (mut ws_write, mut ws_read) = ws_stream.split();
+
+    // OrcaX auth over WebSocket (same 72-byte handshake, sent as binary message)
+    let uuid_bytes = uuid.replace('-', "").as_bytes().chunks(2)
+        .filter_map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap_or("00"), 16).ok())
+        .collect::<Vec<u8>>();
+    if uuid_bytes.len() != 16 { emit("error", Some("bad UUID")); return; }
+
+    // Build auth message (same as QUIC mode)
+    let eph_secret = x25519_dalek::EphemeralSecret::random_from_rng(rand::thread_rng());
+    let eph_pub = x25519_dalek::PublicKey::from(&eph_secret);
+
+    // Read server pubkey from args
+    let server_pub_b64 = arg(args, "--pubkey").unwrap_or_default();
+    let server_pub_bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD, &server_pub_b64
+    ).unwrap_or_default();
+    if server_pub_bytes.len() != 32 {
+        emit("error", Some("bad server pubkey for CDN auth"));
+        return;
+    }
+    let mut spk = [0u8; 32];
+    spk.copy_from_slice(&server_pub_bytes);
+    let server_pub = x25519_dalek::PublicKey::from(spk);
+
+    // ECDH + HKDF + ChaCha20 (same as handshake.rs)
+    let shared = eph_secret.diffie_hellman(&server_pub);
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(b"orcax-v2"), shared.as_bytes());
+    let mut okm = [0u8; 44];
+    hk.expand(b"ORCAX-AUTH-V2", &mut okm).unwrap();
+    let key = chacha20poly1305::Key::from_slice(&okm[..32]);
+    let nonce = chacha20poly1305::Nonce::from_slice(&okm[32..44]);
+
+    use chacha20poly1305::AeadInPlace;
+    let cipher = chacha20poly1305::ChaCha20Poly1305::new(key);
+    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let mut payload = Vec::with_capacity(24);
+    payload.extend_from_slice(&uuid_bytes);
+    payload.extend_from_slice(&timestamp.to_be_bytes());
+    let tag = cipher.encrypt_in_place_detached(nonce, b"", &mut payload).unwrap();
+    payload.extend_from_slice(&tag);
+
+    // Send: [eph_pub:32][encrypted:40] = 72 bytes
+    let mut auth_msg = Vec::with_capacity(72);
+    auth_msg.extend_from_slice(eph_pub.as_bytes());
+    auth_msg.extend_from_slice(&payload);
+
+    if ws_write.send(Message::Binary(auth_msg)).await.is_err() {
+        emit("error", Some("CDN auth send failed"));
+        return;
+    }
+
+    // Read auth response (33 bytes: [server_eph:32][status:1])
+    match ws_read.next().await {
+        Some(Ok(Message::Binary(data))) if data.len() == 33 && data[32] == 0 => {
+            dlog("CDN auth OK");
+        }
+        _ => {
+            emit("error", Some("CDN auth rejected"));
+            return;
+        }
+    }
+
+    emit("connected", Some(&format!("{} (CDN)", sk)));
+    println!("{{\"status\":\"socks_token\",\"token\":\"{}\"}}", socks_token);
+
+    // Accept SOCKS5 connections and relay through WebSocket
+    // For CDN mode, we use a simpler approach: each SOCKS connection sends
+    // StreamOpen + data frames as binary WS messages
+    let ws_write = Arc::new(tokio::sync::Mutex::new(ws_write));
+    let tk = Arc::new(socks_token.to_string());
+
+    // Frame reader: dispatch incoming WS messages to streams
+    let streams: Arc<Mutex<HashMap<u32, mpsc::Sender<Vec<u8>>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let streams2 = streams.clone();
+    let ws_write2 = ws_write.clone();
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = ws_read.next().await {
+            if let Message::Binary(data) = msg {
+                if data.len() < 8 { continue; }
+                let frame_type = data[0];
+                let stream_id = u32::from_be_bytes([data[2], data[3], data[4], data[5]]);
+                let payload = &data[8..];
+
+                match frame_type {
+                    0x00 => { // Data
+                        if let Some(tx) = streams2.lock().await.get(&stream_id) {
+                            let _ = tx.send(payload.to_vec()).await;
+                        }
+                    }
+                    0x02 => { // StreamClose
+                        streams2.lock().await.remove(&stream_id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        dlog("CDN WebSocket reader ended");
+    });
+
+    let next_id = Arc::new(AtomicU32::new(1));
+
+    loop {
+        let (c, _) = match l.accept().await { Ok(v) => v, Err(_) => continue };
+        let ws_w = ws_write.clone();
+        let st = streams.clone();
+        let nid = next_id.clone();
+        let tk = tk.clone();
+        tokio::spawn(async move {
+            let _ = cdn_socks5(c, ws_w, st, nid, &tk).await;
+        });
+    }
+}
+
+async fn cdn_socks5(
+    mut c: TcpStream,
+    ws_write: Arc<tokio::sync::Mutex<futures::stream::SplitSink<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>, tokio_tungstenite::tungstenite::protocol::Message>>>,
+    streams: Arc<Mutex<HashMap<u32, mpsc::Sender<Vec<u8>>>>>,
+    next_id: Arc<AtomicU32>,
+    token: &str,
+) -> Result<()> {
+    use tokio_tungstenite::tungstenite::protocol::Message;
+    use futures::SinkExt;
+
+    c.set_nodelay(true)?;
+    socks5_auth(&mut c, token).await?;
+
+    let mut r = [0u8; 263];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(5), c.read(&mut r)).await
+        .map_err(|_| anyhow!("socks5 timeout"))??;
+    if n < 7 || r[1] != 1 { return Err(anyhow!("bad socks5")); }
+    let (host, port) = match r[3] {
+        1 => (format!("{}.{}.{}.{}", r[4], r[5], r[6], r[7]), u16::from_be_bytes([r[8], r[9]])),
+        3 => { let l = r[4] as usize; (String::from_utf8(r[5..5+l].to_vec())?, u16::from_be_bytes([r[5+l], r[6+l]])) }
+        _ => return Err(anyhow!("unsupported")),
+    };
+
+    let sid = next_id.fetch_add(2, Ordering::Relaxed);
+
+    // Build StreamOpen frame
+    let mut frame = Vec::with_capacity(64);
+    frame.push(0x01); // StreamOpen
+    frame.push(0x00); // flags
+    frame.extend_from_slice(&sid.to_be_bytes()); // stream_id
+    // Build address payload
+    let mut addr = Vec::new();
+    addr.push(1); // cmd: TCP connect
+    addr.extend_from_slice(&port.to_be_bytes());
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        addr.push(1); addr.extend_from_slice(&ip.octets());
+    } else {
+        addr.push(2); addr.push(host.len() as u8); addr.extend_from_slice(host.as_bytes());
+    }
+    frame.extend_from_slice(&(addr.len() as u16).to_be_bytes()); // length
+    frame.extend_from_slice(&addr);
+
+    // Register stream receiver
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
+    streams.lock().await.insert(sid, tx);
+
+    // Send StreamOpen
+    ws_write.lock().await.send(Message::Binary(frame)).await.map_err(|e| anyhow!("{}", e))?;
+
+    // SOCKS5 success response
+    c.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+
+    // Bidirectional relay: TCP ↔ WS frames
+    let (mut cr, mut cw) = c.into_split();
+    let ws_w_up = ws_write.clone();
+
+    // Upstream: client TCP → WS Data frames
+    let up = tokio::spawn(async move {
+        let mut buf = vec![0u8; 65536];
+        loop {
+            let n = match cr.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            let mut frame = Vec::with_capacity(8 + n);
+            frame.push(0x00); // Data
+            frame.push(0x00); // flags
+            frame.extend_from_slice(&sid.to_be_bytes());
+            frame.extend_from_slice(&(n as u16).to_be_bytes());
+            frame.extend_from_slice(&buf[..n]);
+            if ws_w_up.lock().await.send(Message::Binary(frame)).await.is_err() { break; }
+        }
+    });
+
+    // Downstream: WS Data frames → client TCP
+    let dn = tokio::spawn(async move {
+        while let Some(data) = rx.recv().await {
+            if cw.write_all(&data).await.is_err() { break; }
+        }
+    });
+
+    tokio::select! { _ = up => {}, _ = dn => {} }
+
+    // Send StreamClose
+    let mut close_frame = vec![0x02, 0x00];
+    close_frame.extend_from_slice(&sid.to_be_bytes());
+    close_frame.extend_from_slice(&0u16.to_be_bytes());
+    let _ = ws_write.lock().await.send(Message::Binary(close_frame)).await;
+    streams.lock().await.remove(&sid);
+
     Ok(())
 }

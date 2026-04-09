@@ -261,7 +261,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           : (j['sha256_android'] as String? ?? '');
       if (downloadUrl.isEmpty || !mounted) return;
 
-      showDialog(context: context, barrierDismissible: false, builder: (ctx) =>
+      showDialog(context: context, barrierDismissible: true, builder: (ctx) =>
         _UpdateDialog(version: latest, notes: notes, downloadUrl: downloadUrl, expectedHash: expectedHash, onSkip: () async {
           Navigator.pop(ctx);
           final p = await SharedPreferences.getInstance();
@@ -1741,11 +1741,9 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             final p = await SharedPreferences.getInstance();
             await p.setString('update_installed_version', widget.version);
             setState(() => _status = 'Restarting...');
-            final script = '${Directory.systemTemp.path}/fogged-relaunch-${DateTime.now().millisecondsSinceEpoch}.sh';
-            await File(script).writeAsString('#!/bin/bash\nsleep 2\nopen /Applications/Fogged.app\nrm -f \$0\n');
-            await Process.run('chmod', ['+x', script]);
-            Process.start('nohup', [script], mode: ProcessStartMode.detached);
-            await Future.delayed(const Duration(seconds: 1));
+            // Launch the new app before exiting — more reliable than a background script
+            await Process.start('open', ['-n', '/Applications/Fogged.app'], mode: ProcessStartMode.detached);
+            await Future.delayed(const Duration(seconds: 2));
             exit(0);
           }
         }
