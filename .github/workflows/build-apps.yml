@@ -220,13 +220,17 @@ jobs:
           unzip -o /tmp/xray.zip xray -d /tmp/xray-bin/
           # Hysteria2 v2.6.1 — macOS arm64
           curl -sL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.1/hysteria-darwin-arm64" -o /tmp/hysteria
-          chmod +x /tmp/hysteria /tmp/xray-bin/xray
+          # tun2socks v2.5.2 — macOS arm64 (TUN mode for full traffic capture)
+          curl -sL "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-darwin-arm64.zip" -o /tmp/tun2socks.zip
+          unzip -o /tmp/tun2socks.zip -d /tmp/tun2socks-mac/
+          chmod +x /tmp/hysteria /tmp/xray-bin/xray /tmp/tun2socks-mac/tun2socks-darwin-arm64
 
       - name: Bundle and create DMG
         run: |
           APP_MACOS="orcax/app/build/macos/Build/Products/Release/Fogged.app/Contents/MacOS"
           cp orcax/target/release/orcax-connect "$APP_MACOS/"
           cp /tmp/xray-bin/xray "$APP_MACOS/"
+          cp /tmp/tun2socks-mac/tun2socks-darwin-arm64 "$APP_MACOS/tun2socks"
           cp /tmp/hysteria "$APP_MACOS/"
           brew install create-dmg
           create-dmg --volname "Fogged VPN" --window-pos 200 120 --window-size 600 400 --icon-size 100 --icon "Fogged.app" 150 190 --app-drop-link 450 190 --hide-extension "Fogged.app" --no-internet-enable Fogged-macOS.dmg "orcax/app/build/macos/Build/Products/Release/Fogged.app"
