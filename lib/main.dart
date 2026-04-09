@@ -1,227 +1,26 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:crypto/crypto.dart';
+import 'l10n/strings.dart';
+import 'models/vpn_server.dart';
 
-void main() => runApp(const FoggedApp());
-
-// ── i18n ──
-class L {
-  static String _lang = 'en';
-  static void setLang(String l) => _lang = l;
-  static String get lang => _lang;
-
-  static final _t = {
-    'en': {
-      'secure_vpn': 'Secure VPN',
-      'enter_telegram': 'Enter your Telegram User ID',
-      'userid_help': 'Find your User ID in @foggedvpnbot → Settings',
-      'send_code': 'Send Code',
-      'enter_code': 'Enter the code sent to your Telegram',
-      'verify': 'Verify',
-      'back': '← Back',
-      'region': 'Region',
-      'protocol': 'Protocol',
-      'server': 'Server',
-      'speed': 'Speed',
-      'uptime': 'Uptime',
-      'downloaded': 'Downloaded',
-      'speed_test': 'Speed Test',
-      'testing': 'Testing...',
-      'connect': 'CONNECT',
-      'connecting': 'CONNECTING',
-      'protected': 'PROTECTED',
-      'encrypted': 'All traffic encrypted',
-      'tap_connect': 'Tap to connect',
-      'join_channel': 'Please join our channel first:\nhttps://t.me/foggedvpn',
-      'code_sent': 'Check your Telegram for the code',
-      'logout': 'Logout',
-      'debug': 'Debug',
-      'hide': 'Hide',
-      'copied': 'Copied',
-      'failed': 'Failed',
-      'none': 'None',
-      'russia': 'Russia',
-      'china': 'China',
-      'direct': 'Global',
-      'settings': 'Settings',
-      'account': 'Account',
-      'subscription': 'Subscription',
-      'days_left': 'days left',
-      'expired': 'Expired',
-      'subscribe': 'Subscribe',
-      'referrals': 'Referrals',
-      'referral_link': 'Referral Link',
-      'earnings': 'Earnings',
-      'support': 'Support',
-      'send_report': 'Send Report',
-      'include_debug': 'Include debug info',
-      'report_sent': 'Report sent',
-      'report_hint': 'Describe your issue...',
-      'run_full_test': 'Run Full Test',
-      'testing_progress': 'Testing',
-      'best': 'Best',
-      'use_this': 'Use',
-      'sni_test': 'SNI Test',
-      'working': 'Working',
-      'blocked': 'Blocked',
-      'set_preferred': 'Set as preferred',
-      'site_checker': 'Site Checker',
-      'check_all': 'Check All',
-      'connect_first': 'Connect first',
-      'whitelist_mode': 'Whitelist Mode',
-      'add_domain': 'Add domain',
-      'remove': 'Remove',
-      'custom_domains': 'Custom domains',
-      'split_tunnel': 'Split Tunnel',
-      'bypass_vpn': 'Bypass VPN',
-      'domain_routing': 'Domain routing',
-      'coming_soon': 'Coming soon',
-      'choose_language': 'Choose your language',
-      'whitelist_desc': 'VK, Yandex, Sber go direct',
-    },
-    'ru': {
-      'secure_vpn': 'Безопасный VPN',
-      'enter_telegram': 'Введите ваш Telegram User ID',
-      'userid_help': 'Найдите User ID в @foggedvpnbot → Настройки',
-      'send_code': 'Отправить код',
-      'enter_code': 'Введите код из Telegram',
-      'verify': 'Подтвердить',
-      'back': '← Назад',
-      'region': 'Регион',
-      'protocol': 'Протокол',
-      'server': 'Сервер',
-      'speed': 'Скорость',
-      'uptime': 'Время',
-      'downloaded': 'Загружено',
-      'speed_test': 'Тест скорости',
-      'testing': 'Тестирование...',
-      'connect': 'ПОДКЛЮЧИТЬ',
-      'connecting': 'ПОДКЛЮЧЕНИЕ',
-      'protected': 'ЗАЩИЩЕНО',
-      'encrypted': 'Весь трафик зашифрован',
-      'tap_connect': 'Нажмите для подключения',
-      'join_channel': 'Подпишитесь на канал:\nhttps://t.me/foggedvpn',
-      'code_sent': 'Код отправлен в Telegram',
-      'logout': 'Выход',
-      'debug': 'Отладка',
-      'hide': 'Скрыть',
-      'copied': 'Скопировано',
-      'failed': 'Ошибка',
-      'none': 'Нет',
-      'russia': 'Россия',
-      'china': 'Китай',
-      'direct': 'Весь мир',
-      'settings': 'Настройки',
-      'account': 'Аккаунт',
-      'subscription': 'Подписка',
-      'days_left': 'дней',
-      'expired': 'Истекла',
-      'subscribe': 'Подписаться',
-      'referrals': 'Рефералы',
-      'referral_link': 'Реф. ссылка',
-      'earnings': 'Заработок',
-      'support': 'Поддержка',
-      'send_report': 'Отправить',
-      'include_debug': 'Добавить отладку',
-      'report_sent': 'Отправлено',
-      'report_hint': 'Опишите проблему...',
-      'run_full_test': 'Полный тест',
-      'testing_progress': 'Тестирование',
-      'best': 'Лучший',
-      'use_this': 'Выбрать',
-      'sni_test': 'Тест SNI',
-      'working': 'Работает',
-      'blocked': 'Заблокирован',
-      'set_preferred': 'Установить',
-      'site_checker': 'Проверка сайтов',
-      'check_all': 'Проверить все',
-      'connect_first': 'Сначала подключитесь',
-      'whitelist_mode': 'Режим белого списка',
-      'add_domain': 'Добавить домен',
-      'remove': 'Удалить',
-      'custom_domains': 'Свои домены',
-      'split_tunnel': 'Раздельный туннель',
-      'bypass_vpn': 'Обойти VPN',
-      'domain_routing': 'Маршрутизация доменов',
-      'coming_soon': 'Скоро',
-      'choose_language': 'Выберите язык',
-      'whitelist_desc': 'VK, Яндекс, Сбер напрямую',
-    },
-    'zh': {
-      'secure_vpn': '安全VPN',
-      'enter_telegram': '输入您的 Telegram User ID',
-      'userid_help': '在 @foggedvpnbot → 设置 中查找 User ID',
-      'send_code': '发送验证码',
-      'enter_code': '输入Telegram发送的验证码',
-      'verify': '验证',
-      'back': '← 返回',
-      'region': '地区',
-      'protocol': '协议',
-      'server': '服务器',
-      'speed': '速度',
-      'uptime': '运行时间',
-      'downloaded': '已下载',
-      'speed_test': '速度测试',
-      'testing': '测试中...',
-      'connect': '连接',
-      'connecting': '连接中',
-      'protected': '已保护',
-      'encrypted': '所有流量已加密',
-      'tap_connect': '点击连接',
-      'join_channel': '请先加入频道:\nhttps://t.me/foggedvpn',
-      'code_sent': '验证码已发送到Telegram',
-      'logout': '退出',
-      'debug': '调试',
-      'hide': '隐藏',
-      'copied': '已复制',
-      'failed': '失败',
-      'none': '无',
-      'russia': '俄罗斯',
-      'china': '中国',
-      'direct': '全球',
-      'settings': '设置',
-      'account': '账户',
-      'subscription': '订阅',
-      'days_left': '天',
-      'expired': '已过期',
-      'subscribe': '订阅',
-      'referrals': '推荐',
-      'referral_link': '推荐链接',
-      'earnings': '收入',
-      'support': '支持',
-      'send_report': '发送',
-      'include_debug': '包含调试信息',
-      'report_sent': '已发送',
-      'report_hint': '描述您的问题...',
-      'run_full_test': '完整测试',
-      'testing_progress': '测试中',
-      'best': '最佳',
-      'use_this': '使用',
-      'sni_test': 'SNI测试',
-      'working': '正常',
-      'blocked': '已封锁',
-      'set_preferred': '设为首选',
-      'site_checker': '网站检查',
-      'check_all': '检查全部',
-      'connect_first': '请先连接',
-      'whitelist_mode': '白名单模式',
-      'add_domain': '添加域名',
-      'remove': '删除',
-      'custom_domains': '自定义域名',
-      'split_tunnel': '分流',
-      'bypass_vpn': '绕过VPN',
-      'domain_routing': '域名路由',
-      'coming_soon': '即将推出',
-      'choose_language': '选择语言',
-      'whitelist_desc': 'VK、Yandex、Sber直连',
-    },
+void main() {
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    debugPrint('Flutter error: ${details.exceptionAsString()}');
   };
-
-  static String tr(String key) => _t[_lang]?[key] ?? _t['en']?[key] ?? key;
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('Unhandled error: $error\n$stack');
+    return true;
+  };
+  runApp(const FoggedApp());
 }
 
 class FoggedApp extends StatelessWidget {
@@ -232,15 +31,6 @@ class FoggedApp extends StatelessWidget {
     theme: ThemeData(brightness: Brightness.dark, scaffoldBackgroundColor: Colors.black, useMaterial3: true),
     home: const HomeScreen(),
   );
-}
-
-// ── Parsed server from subscription ──
-class VpnServer {
-  final String protocol; // 'vless', 'hysteria2', 'orcax'
-  final String name;
-  final String addr; // ip:port
-  final Map<String, String> params; // pbk, sid, sni, flow, obfs, etc.
-  VpnServer(this.protocol, this.name, this.addr, this.params);
 }
 
 class HomeScreen extends StatefulWidget {
@@ -261,10 +51,21 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   final _handleCtl = TextEditingController();
   final _codeCtl = TextEditingController();
 
+  // Secure temp directory for config files (randomized, cleaned on disconnect)
+  Directory? _tempDir;
+  String _tempPath(String name) {
+    _tempDir ??= Directory.systemTemp.createTempSync('fogged_');
+    return '${_tempDir!.path}/$name';
+  }
+  void _cleanupTemp() {
+    try { _tempDir?.deleteSync(recursive: true); } catch (_) {}
+    _tempDir = null;
+  }
+
   // Connection
   bool _connected = false;
   bool _connecting = false;
-  String _protocol = 'VLESS+Reality';
+  String _protocol = Platform.isAndroid ? 'OrcaX Pro Max' : 'VLESS+Reality';
   String _server = '';
   String _uptime = '--';
   String _downloaded = '0 B';
@@ -314,9 +115,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   int _totalReferrals = 0;
   String _userRole = 'user'; // admin, supermod, user
 
-  static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
+  // Android only supports OrcaX (orcax-connect is the bundled native binary)
+  // Desktop supports all protocols (xray, hysteria, orcax-connect all bundled)
+  static final _protocols = Platform.isAndroid
+      ? const ['OrcaX Pro Max', 'OrcaX VLESS']
+      : const ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiBase = 'https://dl.fogged.net';
-  String _appVersion = '1.4.1'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.5.0'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -428,7 +233,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           'server': _server,
           'mode': _mode,
         }));
-    } catch (_) {}
+    } catch (e) { debugPrint('Settings sync: $e'); }
   }
 
   Future<void> _checkForUpdate() async {
@@ -451,10 +256,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       final downloadUrl = Platform.isMacOS ? (j['download_macos'] as String? ?? '')
           : Platform.isWindows ? (j['download_windows'] as String? ?? '')
           : (j['download_android'] as String? ?? '');
+      final expectedHash = Platform.isMacOS ? (j['sha256_macos'] as String? ?? '')
+          : Platform.isWindows ? (j['sha256_windows'] as String? ?? '')
+          : (j['sha256_android'] as String? ?? '');
       if (downloadUrl.isEmpty || !mounted) return;
 
       showDialog(context: context, barrierDismissible: false, builder: (ctx) =>
-        _UpdateDialog(version: latest, notes: notes, downloadUrl: downloadUrl, onSkip: () async {
+        _UpdateDialog(version: latest, notes: notes, downloadUrl: downloadUrl, expectedHash: expectedHash, onSkip: () async {
           Navigator.pop(ctx);
           final p = await SharedPreferences.getInstance();
           await p.setString('update_skipped_version', latest);
@@ -464,7 +272,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           await p.setInt('update_dismissed_at', DateTime.now().millisecondsSinceEpoch);
         }),
       );
-    } catch (_) {}
+    } catch (e) { debugPrint('Update check: $e'); }
   }
 
   /// Compare semver: returns true if a > b
@@ -573,6 +381,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           final s = _parseLine(line);
           if (s != null) servers.add(s);
         }
+      } else if (resp.statusCode == 401 || resp.statusCode == 403) {
+        _addLog('subscription error: ${resp.statusCode}');
+        _showError(L.tr('expired'));
+      } else {
+        _addLog('subscription fetch: HTTP ${resp.statusCode}');
       }
 
       // 2. Fetch HY2 from singbox endpoint
@@ -590,7 +403,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               servers.add(VpnServer('hysteria2', name, '$ip:$port', {'obfs-password': obfs}));
             }
           }
-        } catch (_) {}
+        } catch (e) { debugPrint('Singbox parse error: $e'); }
       }
 
       // OrcaX servers come from subscription now — no hardcoded duplicates
@@ -634,9 +447,31 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     } else {
       _proxyProcess?.kill();
       _proxyProcess = null;
-      await Process.run('bash', ['-c', 'lsof -ti :1080 | xargs kill -9 2>/dev/null']);
+      // Kill any leftover SOCKS proxy processes on port 1080
+      try {
+        if (Platform.isMacOS || Platform.isLinux) {
+          final lsof = await Process.run('lsof', ['-ti', ':1080']);
+          if (lsof.exitCode == 0) {
+            for (final pid in lsof.stdout.toString().trim().split('\n').where((s) => s.isNotEmpty)) {
+              await Process.run('kill', ['-9', pid]);
+            }
+          }
+        } else if (Platform.isWindows) {
+          // Windows: use netstat + taskkill
+          final netstat = await Process.run('cmd', ['/c', 'netstat -ano | findstr :1080 | findstr LISTENING']);
+          if (netstat.exitCode == 0) {
+            for (final line in netstat.stdout.toString().trim().split('\n').where((s) => s.isNotEmpty)) {
+              final pid = line.trim().split(RegExp(r'\s+')).last;
+              if (pid.isNotEmpty && int.tryParse(pid) != null) {
+                await Process.run('taskkill', ['/F', '/PID', pid]);
+              }
+            }
+          }
+        }
+      } catch (_) {}
       await _setSystemProxy(false);
     }
+    _cleanupTemp();
     await Future.delayed(const Duration(milliseconds: 500)); // Wait for port release
     if (mounted) setState(() { _connected = false; _connecting = false; _uptime = '--'; _downloaded = '0 B'; }); _trayChannel.invokeMethod('setConnected', false); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', false));
   }
@@ -655,6 +490,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
       // Android: use native VpnService instead of Process.run
       if (Platform.isAndroid) {
+        // Request POST_NOTIFICATIONS permission on Android 13+ (needed for foreground service)
+        try { await _androidVpn.invokeMethod('requestNotificationPermission'); } catch (_) {}
         final result = await _androidVpn.invokeMethod('startVpn', {
           'server': srv.addr,
           'uuid': _uuid,
@@ -686,16 +523,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         if (_protocol == 'OrcaX Pro Max' || _protocol == 'OrcaX Hysteria2') { args.addAll(['--protocol', 'quic']); }
       } else if (proto == 'vless') {
         binary = await _findBinary('xray') ?? '';
-        if (binary.isEmpty) { _showError('xray binary not found in orcax/bin/'); setState(() => _connecting = false); return; }
+        if (binary.isEmpty) { _showError('xray binary not found — check installation'); setState(() => _connecting = false); return; }
         final config = _generateXrayConfig(srv, _uuid);
-        final configPath = '/tmp/fogged-vless.json';
+        final configPath = _tempPath('vless.json');
         await File(configPath).writeAsString(config);
         args = ['run', '-config', configPath];
       } else if (proto == 'hysteria2') {
         binary = await _findBinary('hysteria') ?? '';
-        if (binary.isEmpty) { _showError('hysteria binary not found in orcax/bin/'); setState(() => _connecting = false); return; }
+        if (binary.isEmpty) { _showError('hysteria binary not found — check installation'); setState(() => _connecting = false); return; }
         final config = _generateHy2Config(srv, _uuid);
-        final configPath = '/tmp/fogged-hy2.yaml';
+        final configPath = _tempPath('hy2.yaml');
         await File(configPath).writeAsString(config);
         args = ['client', '-c', configPath];
       } else {
@@ -816,7 +653,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     final parts = srv.addr.split(':');
     final ip = parts[0];
     final port = parts.length > 1 ? parts[1] : '20000-50000';
-    final obfs = srv.params['obfs-password'] ?? srv.params['obfs'] ?? 'fogged_hy2_sal_2026';
+    final obfs = srv.params['obfs-password'] ?? srv.params['obfs'] ?? '';
+    if (obfs.isEmpty) { _addLog('WARNING: no obfs password from server, HY2 may fail'); }
     return '''
 server: $ip:$port
 auth: $uuid
@@ -836,16 +674,42 @@ tls:
   Future<String?> _findBinary(String name) async {
     final ext = Platform.isWindows ? '.exe' : '';
     final binName = '$name$ext';
-    final paths = Platform.isWindows ? [
-      '${Platform.environment['LOCALAPPDATA']}\\Fogged\\bin\\$binName',
-      '${Directory.current.path}\\bin\\$binName',
-      'C:\\Program Files\\Fogged\\$binName',
-    ] : [
-      '/Users/anon/CascadeProjects/Work/orcax/bin/$binName',
-      '/Users/anon/CascadeProjects/Work/orcax/target/release/$binName',
-      '/Users/anon/CascadeProjects/Work/orcax/target/debug/$binName',
-      '/usr/local/bin/$binName',
-    ];
+
+    // App bundle directory (where the executable lives)
+    final appDir = File(Platform.resolvedExecutable).parent.path;
+
+    final paths = <String>[];
+    if (Platform.isWindows) {
+      paths.addAll([
+        '$appDir\\$binName',                                          // next to app exe
+        '$appDir\\bin\\$binName',                                     // app/bin/
+        '${Platform.environment['LOCALAPPDATA']}\\Fogged\\bin\\$binName',
+        '${Directory.current.path}\\$binName',
+        'C:\\Program Files\\Fogged\\$binName',
+      ]);
+    } else if (Platform.isMacOS) {
+      // Inside .app bundle: Fogged.app/Contents/MacOS/
+      paths.addAll([
+        '$appDir/$binName',                                           // next to app exe in bundle
+        '${File(Platform.resolvedExecutable).parent.parent.path}/Resources/$binName', // .app/Contents/Resources/
+        '/usr/local/bin/$binName',
+      ]);
+    } else {
+      paths.addAll([
+        '$appDir/$binName',
+        '/usr/local/bin/$binName',
+      ]);
+    }
+
+    // Dev paths (only check if running from source tree)
+    if (appDir.contains('CascadeProjects') || appDir.contains('flutter')) {
+      paths.addAll([
+        '${Directory.current.path}/orcax/bin/$binName',
+        '${Directory.current.path}/orcax/target/release/$binName',
+        '${Directory.current.path}/orcax/target/debug/$binName',
+      ]);
+    }
+
     for (final p in paths) { if (await File(p).exists()) return p; }
     return null;
   }
@@ -878,7 +742,7 @@ tls:
           if (enable) {
             if (_whitelistMode || _splitDomains.isNotEmpty) {
               final pac = _generatePacFile();
-              final pacPath = '/tmp/fogged-proxy.pac';
+              final pacPath = _tempPath('proxy.pac');
               await File(pacPath).writeAsString(pac);
               await Process.run('networksetup', ['-setautoproxyurl', name, 'file:///$pacPath']);
               await Process.run('networksetup', ['-setautoproxystate', name, 'on']);
@@ -894,20 +758,32 @@ tls:
           }
         }
       } else if (Platform.isWindows) {
+        Future<bool> regRun(List<String> args) async {
+          final r = await Process.run('reg', args);
+          if (r.exitCode != 0) { _addLog('registry error: ${r.stderr}'); return false; }
+          return true;
+        }
+        const regPath = r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings';
         if (enable) {
           if (_whitelistMode || _splitDomains.isNotEmpty) {
             final pac = _generatePacFile();
             final pacPath = '${Platform.environment['TEMP']}\\fogged-proxy.pac';
             await File(pacPath).writeAsString(pac);
-            await Process.run('reg', ['add', r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings', '/v', 'AutoConfigURL', '/t', 'REG_SZ', '/d', 'file:///$pacPath', '/f']);
-            await Process.run('reg', ['add', r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings', '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f']);
+            if (!await regRun(['add', regPath, '/v', 'AutoConfigURL', '/t', 'REG_SZ', '/d', 'file:///$pacPath', '/f'])) {
+              _addLog('failed to set PAC proxy, rolling back');
+              await regRun(['add', regPath, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f']);
+            }
+            await regRun(['add', regPath, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f']);
           } else {
-            await Process.run('reg', ['add', r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings', '/v', 'ProxyServer', '/t', 'REG_SZ', '/d', 'socks=127.0.0.1:1080', '/f']);
-            await Process.run('reg', ['add', r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings', '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '1', '/f']);
+            await regRun(['add', regPath, '/v', 'ProxyServer', '/t', 'REG_SZ', '/d', 'socks=127.0.0.1:1080', '/f']);
+            if (!await regRun(['add', regPath, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '1', '/f'])) {
+              _addLog('failed to enable proxy, rolling back');
+              await regRun(['add', regPath, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f']);
+            }
           }
         } else {
-          await Process.run('reg', ['add', r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings', '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f']);
-          await Process.run('reg', ['delete', r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings', '/v', 'AutoConfigURL', '/f']);
+          await regRun(['add', regPath, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f']);
+          await regRun(['delete', regPath, '/v', 'AutoConfigURL', '/f']);
         }
       } else if (Platform.isLinux) {
         if (enable) {
@@ -918,7 +794,10 @@ tls:
           await Process.run('gsettings', ['set', 'org.gnome.system.proxy', 'mode', 'none']);
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('System proxy setup failed: $e');
+      _addLog('proxy setup error: $e');
+    }
   }
 
   String _generatePacFile() {
@@ -953,8 +832,9 @@ $conditions
         if (mounted) setState(() { _testing = false; _testResult = '${mbps.toStringAsFixed(1)} Mbps | ${latencyMs}ms | ${_fmtBytes(bytes)} in ${(elapsed.inMilliseconds / 1000).toStringAsFixed(1)}s'; });
       } else {
       // Desktop: use curl through SOCKS proxy
+      final devNull = Platform.isWindows ? 'NUL' : '/dev/null';
       final result = await Process.run('curl', [
-        '-x', 'socks5h://127.0.0.1:1080', '-so', '/dev/null',
+        '-x', 'socks5h://127.0.0.1:1080', '-so', devNull,
         '-w', '%{speed_download}|%{size_download}|%{time_total}|%{time_starttransfer}',
         '-r', '0-5242879', 'https://hel1-speed.hetzner.com/100MB.bin', '--max-time', '30',
       ]);
@@ -1365,7 +1245,7 @@ $conditions
 
         // Run speed test via curl
         final result = await Process.run('curl', [
-          '-x', 'socks5h://127.0.0.1:1080', '-so', '/dev/null',
+          '-x', 'socks5h://127.0.0.1:1080', '-so', Platform.isWindows ? 'NUL' : '/dev/null',
           '-w', '%{speed_download}|%{time_starttransfer}',
           '-r', '0-5242879', 'https://hel1-speed.hetzner.com/100MB.bin', '--max-time', '15',
         ]);
@@ -1428,7 +1308,7 @@ $conditions
         try {
           final result = await Process.run('curl', [
             '--resolve', '$sni:443:$serverIp', 'https://$sni/',
-            '-so', '/dev/null', '-w', '%{time_connect}', '--max-time', '5',
+            '-so', Platform.isWindows ? 'NUL' : '/dev/null', '-w', '%{time_connect}', '--max-time', '5',
           ]);
           final connectTime = double.tryParse(result.stdout.toString().trim()) ?? 0;
           final working = result.exitCode == 0 && connectTime > 0 && connectTime < 5;
@@ -1566,7 +1446,7 @@ $conditions
         } else {
           // Desktop: use curl through SOCKS proxy
           final result = await Process.run('curl', [
-            '-x', 'socks5h://127.0.0.1:1080', '-so', '/dev/null',
+            '-x', 'socks5h://127.0.0.1:1080', '-so', Platform.isWindows ? 'NUL' : '/dev/null',
             '-w', '%{http_code}', 'https://$site/', '--max-time', '8',
           ]);
           final code = int.tryParse(result.stdout.toString().trim()) ?? 0;
@@ -1656,7 +1536,11 @@ $conditions
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
             enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))))),
         const SizedBox(height: 8),
-        Text(L.tr('userid_help'), style: TextStyle(fontSize: 10, color: Colors.white.withValues(alpha: 0.2), height: 1.4), textAlign: TextAlign.center),
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Icon(Icons.info_outline, size: 13, color: Colors.white.withValues(alpha: 0.3)),
+          const SizedBox(width: 6),
+          Flexible(child: Text(L.tr('userid_help'), style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.35), height: 1.4))),
+        ]),
         const SizedBox(height: 12),
         SizedBox(width: double.infinity, height: 44, child: ElevatedButton(
           onPressed: _authLoading ? null : _requestCode,
@@ -1670,7 +1554,8 @@ $conditions
           style: TextStyle(fontSize: 11, fontFamily: 'Courier', color: _codeTimer > 60 ? Colors.white.withValues(alpha: 0.2) : _codeTimer > 0 ? Colors.orange.withValues(alpha: 0.5) : Colors.red.withValues(alpha: 0.5))),
         const SizedBox(height: 10),
         TextField(controller: _codeCtl, keyboardType: TextInputType.number, style: const TextStyle(color: Colors.white, fontSize: 20, letterSpacing: 8), textAlign: TextAlign.center,
-          decoration: InputDecoration(hintText: '000000', hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.15), letterSpacing: 8),
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(8)],
+          decoration: InputDecoration(hintText: '00000000', hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.15), letterSpacing: 8),
             filled: true, fillColor: Colors.white.withValues(alpha: 0.05),
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
             enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))))),
@@ -1721,9 +1606,9 @@ $conditions
 // ── In-App Update Dialog (Surfshark-style) ──
 
 class _UpdateDialog extends StatefulWidget {
-  final String version, notes, downloadUrl;
+  final String version, notes, downloadUrl, expectedHash;
   final VoidCallback onSkip, onLater;
-  const _UpdateDialog({required this.version, required this.notes, required this.downloadUrl, required this.onSkip, required this.onLater});
+  const _UpdateDialog({required this.version, required this.notes, required this.downloadUrl, this.expectedHash = '', required this.onSkip, required this.onLater});
 
   @override
   State<_UpdateDialog> createState() => _UpdateDialogState();
@@ -1802,6 +1687,18 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       }
 
       final bytes = chunks.expand((c) => c).toList();
+
+      // Verify SHA256 hash if server provided one
+      if (widget.expectedHash.isNotEmpty) {
+        final digest = sha256.convert(bytes);
+        if (digest.toString() != widget.expectedHash) {
+          setState(() { _downloading = false; _status = 'Download corrupted — hash mismatch'; });
+          debugPrint('SHA256 mismatch: expected ${widget.expectedHash}, got $digest');
+          return;
+        }
+        debugPrint('SHA256 verified: $digest');
+      }
+
       setState(() { _status = 'Installing...'; _progress = 1.0; });
 
       if (Platform.isMacOS) {
@@ -1818,12 +1715,18 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         // Unzip silently
         final unzip = await Process.run('unzip', ['-o', '-q', zipPath, '-d', extractDir]);
         if (unzip.exitCode == 0) {
-          // Find the .app inside
-          final appDir = await Process.run('bash', ['-c', 'find $extractDir -name "*.app" -maxdepth 2 | head -1'.replaceAll('\$extractDir', extractDir)]);
-          final appPath = appDir.stdout.toString().trim();
-          if (appPath.isNotEmpty) {
+          // Find the .app inside (safe: no shell invocation)
+          String? appPath;
+          await for (final entity in Directory(extractDir).list(recursive: true)) {
+            if (entity is Directory && entity.path.endsWith('.app')) {
+              appPath = entity.path;
+              break;
+            }
+          }
+          if (appPath != null && appPath.isNotEmpty) {
             setState(() => _status = 'Replacing app...');
-            await Process.run('bash', ['-c', 'rm -rf /Applications/Fogged.app && cp -R "$appPath" /Applications/']);
+            await Process.run('rm', ['-rf', '/Applications/Fogged.app']);
+            await Process.run('cp', ['-R', appPath, '/Applications/']);
 
             // Cleanup update files
             await File(zipPath).delete();
@@ -1833,7 +1736,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             final p = await SharedPreferences.getInstance();
             await p.setString('update_installed_version', widget.version);
             setState(() => _status = 'Restarting...');
-            final script = '/tmp/fogged-relaunch.sh';
+            final script = '${Directory.systemTemp.path}/fogged-relaunch-${DateTime.now().millisecondsSinceEpoch}.sh';
             await File(script).writeAsString('#!/bin/bash\nsleep 2\nopen /Applications/Fogged.app\nrm -f \$0\n');
             await Process.run('chmod', ['+x', script]);
             Process.start('nohup', [script], mode: ProcessStartMode.detached);
@@ -1975,8 +1878,10 @@ class _SettingsScreenState extends State<_SettingsScreen> {
       if (enabled) {
         // Block all traffic except localhost (SOCKS proxy) using pf
         final rules = 'block all\npass on lo0\npass out proto tcp to 127.0.0.1 port 1080\npass out proto udp to any port 53\n';
-        await File('/tmp/fogged-killswitch.conf').writeAsString(rules);
-        await Process.run('sudo', ['pfctl', '-ef', '/tmp/fogged-killswitch.conf']);
+        final ksPath = '${Directory.systemTemp.path}/fogged-killswitch-${DateTime.now().millisecondsSinceEpoch}.conf';
+        await File(ksPath).writeAsString(rules);
+        await Process.run('sudo', ['pfctl', '-ef', ksPath]);
+        try { await File(ksPath).delete(); } catch (_) {}
       } else {
         await Process.run('sudo', ['pfctl', '-d']);
       }
@@ -2003,7 +1908,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           ]),
           const SizedBox(height: 8),
           SizedBox(width: double.infinity, height: 40, child: ElevatedButton(
-            onPressed: () => Process.run('open', ['https://t.me/foggedvpnbot']),
+            onPressed: () => launchUrl(Uri.parse('https://t.me/foggedvpnbot'), mode: LaunchMode.externalApplication),
             style: ElevatedButton.styleFrom(backgroundColor: Colors.white.withValues(alpha: 0.08), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
             child: Text(L.tr('subscribe'), style: const TextStyle(fontSize: 13, letterSpacing: 1)),
           )),
@@ -2165,7 +2070,23 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           ]),
           const SizedBox(height: 16),
 
-          // Logout
+          // Legal links
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            GestureDetector(
+              onTap: () => launchUrl(Uri.parse('https://fogged.net/privacy-policy.html'), mode: LaunchMode.externalApplication),
+              child: Text(L.tr('privacy_policy'), style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.3), decoration: TextDecoration.underline, decorationColor: Colors.white.withValues(alpha: 0.2))),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text('|', style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.15))),
+            ),
+            GestureDetector(
+              onTap: () => launchUrl(Uri.parse('https://fogged.net/user-agreement.html'), mode: LaunchMode.externalApplication),
+              child: Text(L.tr('terms_of_service'), style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.3), decoration: TextDecoration.underline, decorationColor: Colors.white.withValues(alpha: 0.2))),
+            ),
+          ]),
+          const SizedBox(height: 16),
+
           // Check for updates button
           Center(child: GestureDetector(
             onTap: () async {

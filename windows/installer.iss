@@ -1,39 +1,59 @@
 ; Fogged VPN Windows Installer (Inno Setup)
-; Compile with: iscc installer.iss
+; Built automatically by CI — do not compile manually unless testing
+
+#define MyAppName "Fogged VPN"
+#define MyAppExeName "fogged.exe"
+#define MyAppPublisher "Fogged"
+#define MyAppURL "https://fogged.net"
 
 [Setup]
 AppId={{F0GGED-VPN-2026}
-AppName=Fogged VPN
-AppVersion=1.1.0
-AppPublisher=Fogged
-AppPublisherURL=https://fogged.net
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
 DefaultDirName={autopf}\Fogged
-DefaultGroupName=Fogged VPN
+DefaultGroupName={#MyAppName}
 OutputBaseFilename=Fogged-Setup
-Compression=lzma
+OutputDir=.
+Compression=lzma2/ultra64
 SolidCompression=yes
 PrivilegesRequired=lowest
-SetupIconFile=..\assets\logo.ico
-UninstallDisplayIcon={app}\fogged.exe
+SetupIconFile=runner\resources\app_icon.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
+WizardStyle=modern
+DisableProgramGroupPage=yes
+ArchitecturesInstallIn64BitMode=x64compatible
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "autostart"; Description: "Start Fogged on Windows login"; GroupDescription: "System:"
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
+Name: "autostart"; Description: "Start Fogged VPN on Windows login"; GroupDescription: "System:"
 
 [Files]
+; Flutter app + all DLLs
 Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
-Source: "..\target\release\orcax-connect.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+; VPN protocol binaries (bundled — user never sees these)
+Source: "build\windows\x64\runner\Release\orcax-connect.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "build\windows\x64\runner\Release\xray.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "build\windows\x64\runner\Release\hysteria.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Fogged VPN"; Filename: "{app}\fogged.exe"
-Name: "{autodesktop}\Fogged VPN"; Filename: "{app}\fogged.exe"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "FoggedVPN"; ValueData: """{app}\fogged.exe"""; Tasks: autostart
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "FoggedVPN"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-Filename: "{app}\fogged.exe"; Description: "Launch Fogged VPN"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; Clean up system proxy on uninstall
+Filename: "reg"; Parameters: "add ""HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"" /v ProxyEnable /t REG_DWORD /d 0 /f"; Flags: runhidden
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}"

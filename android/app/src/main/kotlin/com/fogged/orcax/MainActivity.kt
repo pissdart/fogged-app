@@ -2,7 +2,9 @@ package com.fogged.orcax
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
+import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -41,6 +43,14 @@ class MainActivity : FlutterActivity() {
                         startVpnService()
                         result.success(true)
                     }
+                }
+                "requestNotificationPermission" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 2)
+                        }
+                    }
+                    result.success(true)
                 }
                 "stopVpn" -> {
                     val intent = Intent(this, FoggedVpnService::class.java)

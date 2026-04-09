@@ -103,8 +103,20 @@ class FoggedVpnService : VpnService() {
             return
         }
 
-        // Wait for orcax-connect to be ready
-        Thread.sleep(3000)
+        // Wait for orcax-connect SOCKS5 port to be ready (max 10s)
+        val maxWait = 10_000L
+        val start = System.currentTimeMillis()
+        var ready = false
+        while (System.currentTimeMillis() - start < maxWait) {
+            try {
+                java.net.Socket("127.0.0.1", 1080).close()
+                ready = true
+                break
+            } catch (_: Exception) {
+                Thread.sleep(200)
+            }
+        }
+        if (!ready) Log.w(TAG, "SOCKS port not ready after ${maxWait}ms, continuing anyway")
 
         // Start tun2socks v2 (bridges TUN fd to SOCKS5)
         try {

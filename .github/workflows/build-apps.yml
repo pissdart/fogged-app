@@ -1,0 +1,267 @@
+name: Build & Deploy Apps
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build-windows:
+    name: Windows App
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            orcax/target
+          key: windows-cargo-${{ hashFiles('orcax/Cargo.lock') }}
+
+      - name: Build orcax-connect.exe
+        working-directory: orcax
+        run: cargo build --release --bin orcax-connect
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter pub get
+        working-directory: orcax/app
+        run: flutter pub get
+
+      - name: Build Windows app
+        working-directory: orcax/app
+        run: flutter build windows --release
+
+      - name: Bundle VPN binaries
+        shell: bash
+        run: |
+          RELEASE_DIR="orcax/app/build/windows/x64/runner/Release"
+          # orcax-connect (built above)
+          cp orcax/target/release/orcax-connect.exe "$RELEASE_DIR/"
+          # Xray v25.3.6 — Windows x64
+          curl -sL "https://github.com/XTLS/Xray-core/releases/download/v25.3.6/Xray-windows-64.zip" -o /tmp/xray.zip
+          7z e /tmp/xray.zip xray.exe -o"$RELEASE_DIR" -y
+          # Hysteria2 v2.6.1 — Windows x64
+          curl -sL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.1/hysteria-windows-amd64.exe" -o "$RELEASE_DIR/hysteria.exe"
+
+      - name: Build Windows installer
+        shell: bash
+        run: |
+          # Install Inno Setup via Chocolatey
+          choco install innosetup -y --no-progress
+          # Get version from pubspec.yaml
+          VERSION=$(grep '^version:' orcax/app/pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
+          # Build installer
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+            "/DMyAppVersion=$VERSION" \
+            orcax/app/windows/installer.iss
+          mv orcax/app/windows/Fogged-Setup.exe "$GITHUB_WORKSPACE/Fogged-Setup.exe"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: fogged-windows
+          path: Fogged-Setup.exe
+
+  build-android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26d
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            orcax/target
+          key: android-cargo-${{ hashFiles('orcax/Cargo.lock') }}
+
+      - name: Build orcax-connect for ARM64
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          CC_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang
+          AR_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang
+        working-directory: orcax
+        run: cargo build --release --target aarch64-linux-android --bin orcax-connect
+
+      - name: Prepare native libs
+        run: |
+          mkdir -p orcax/app/android/app/src/main/jniLibs/arm64-v8a
+          cp orcax/target/aarch64-linux-android/release/orcax-connect orcax/app/android/app/src/main/jniLibs/arm64-v8a/liborcax_connect.so
+          # Download tun2socks
+          curl -sL "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-arm64.zip" -o /tmp/tun2socks.zip
+          unzip -o /tmp/tun2socks.zip -d /tmp/tun2socks/
+          cp /tmp/tun2socks/tun2socks-linux-arm64 orcax/app/android/app/src/main/jniLibs/arm64-v8a/libtun2socks.so
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Setup release signing
+        if: env.RELEASE_KEYSTORE_BASE64 != ''
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > orcax/app/android/app/fogged-release.jks
+          cat > orcax/app/android/app/key.properties <<EOF
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=fogged-release.jks
+          EOF
+
+      - name: Build APK and AAB
+        working-directory: orcax/app
+        run: |
+          flutter pub get
+          flutter build apk --release
+          flutter build appbundle --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fogged-android
+          path: orcax/app/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fogged-android-aab
+          path: orcax/app/build/app/outputs/bundle/release/app-release.aab
+
+  build-macos:
+    name: macOS App
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            orcax/target
+          key: macos-cargo-${{ hashFiles('orcax/Cargo.lock') }}
+
+      - name: Build orcax-connect
+        working-directory: orcax
+        run: cargo build --release --bin orcax-connect
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build macOS app
+        working-directory: orcax/app
+        run: |
+          flutter pub get
+          flutter build macos --release
+
+      - name: Download xray + hysteria for macOS
+        run: |
+          # Xray v25.3.6 — macOS arm64
+          curl -sL "https://github.com/XTLS/Xray-core/releases/download/v25.3.6/Xray-macos-arm64-v8a.zip" -o /tmp/xray.zip
+          unzip -o /tmp/xray.zip xray -d /tmp/xray-bin/
+          # Hysteria2 v2.6.1 — macOS arm64
+          curl -sL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.1/hysteria-darwin-arm64" -o /tmp/hysteria
+          chmod +x /tmp/hysteria /tmp/xray-bin/xray
+
+      - name: Bundle and create DMG
+        run: |
+          APP_MACOS="orcax/app/build/macos/Build/Products/Release/Fogged.app/Contents/MacOS"
+          cp orcax/target/release/orcax-connect "$APP_MACOS/"
+          cp /tmp/xray-bin/xray "$APP_MACOS/"
+          cp /tmp/hysteria "$APP_MACOS/"
+          brew install create-dmg
+          create-dmg --volname "Fogged VPN" --window-pos 200 120 --window-size 600 400 --icon-size 100 --icon "Fogged.app" 150 190 --app-drop-link 450 190 --hide-extension "Fogged.app" --no-internet-enable Fogged-macOS.dmg "orcax/app/build/macos/Build/Products/Release/Fogged.app"
+          cd "orcax/app/build/macos/Build/Products/Release" && zip -r "$GITHUB_WORKSPACE/Fogged-macOS.zip" Fogged.app
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fogged-macos
+          path: |
+            Fogged-macOS.dmg
+            Fogged-macOS.zip
+
+  deploy:
+    name: Deploy to Server
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-android, build-macos]
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Deploy to server
+        env:
+          SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H 204.168.220.188 >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Upload Windows installer
+          scp -i ~/.ssh/deploy_key artifacts/fogged-windows/Fogged-Setup.exe root@204.168.220.188:/opt/fogged/downloads/Fogged-Setup.exe
+
+          # Upload Android APK
+          scp -i ~/.ssh/deploy_key artifacts/fogged-android/app-release.apk root@204.168.220.188:/opt/fogged/downloads/Fogged-Android.apk
+
+          # Upload macOS DMG + ZIP
+          scp -i ~/.ssh/deploy_key artifacts/fogged-macos/Fogged-macOS.dmg root@204.168.220.188:/opt/fogged/downloads/Fogged-macOS.dmg
+          scp -i ~/.ssh/deploy_key artifacts/fogged-macos/Fogged-macOS.zip root@204.168.220.188:/opt/fogged/downloads/Fogged-macOS.zip
+
+          echo "All platforms deployed"
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
