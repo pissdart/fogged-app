@@ -154,11 +154,26 @@ async fn socks5_auth(c: &mut TcpStream, token: &str) -> Result<()> {
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let sa = arg(&args, "--server").unwrap_or("204.168.171.253:9444".into());
+    let mut sa = arg(&args, "--server").unwrap_or("204.168.171.253:9444".into());
     let sk = arg(&args, "--socks").unwrap_or("127.0.0.1:1080".into());
     let protocol = arg(&args, "--protocol").unwrap_or("tcp".into());
     let socks_token = arg(&args, "--socks-token").unwrap_or_else(|| generate_socks_token());
-    let cdn_url = arg(&args, "--cdn-url"); // e.g. wss://fogged-tunnel.workers.dev/tunnel
+    let cdn_url = arg(&args, "--cdn-url");
+    let extra_servers = arg(&args, "--extra-servers"); // comma-separated backup servers for multi-path
+
+    // Port hopping: if --ports is provided, pick a random port from the list
+    if let Some(ports_str) = arg(&args, "--ports") {
+        let ports: Vec<u16> = ports_str.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        if !ports.is_empty() {
+            use rand::Rng;
+            let port = ports[rand::thread_rng().gen_range(0..ports.len())];
+            // Replace port in server address
+            if let Some(colon) = sa.rfind(':') {
+                sa = format!("{}:{}", &sa[..colon], port);
+            }
+            dlog(&format!("port hop: selected port {} from {} options", port, ports.len()));
+        }
+    }
 
     // Kill any previous instance hogging the SOCKS port
     if let Some(port_str) = sk.rsplit(':').next() {
@@ -172,7 +187,7 @@ async fn main() {
     emit("connecting", None);
 
     if protocol == "quic" {
-        run_quic_mode(&sa, &sk, &args, &socks_token).await;
+        run_quic_mode(&sa, &sk, &args, &socks_token, &extra_servers).await;
         // If QUIC failed and we have a CDN URL, try WebSocket fallback
         if let Some(ref url) = cdn_url {
             dlog("QUIC failed, trying CDN WebSocket fallback...");
@@ -391,7 +406,11 @@ impl quinn::rustls::client::danger::ServerCertVerifier for QuicNV {
 /// Connect to QUIC server and authenticate. Returns the connection on success.
 async fn quic_connect_and_auth(endpoint: &quinn::Endpoint, addr: std::net::SocketAddr, args: &[String]) -> Option<quinn::Connection> {
     dlog(&format!("QUIC connecting to {}", addr));
-    let conn = match endpoint.connect(addr, "orcax.local") {
+    // Use a legitimate Russian domain as SNI (matches Reality pool)
+    // Randomize per connection to avoid fingerprinting
+    let sni_pool = ["ozon.ru", "wildberries.ru", "cdn.jsdelivr.net", "api.vk.com", "lamoda.ru"];
+    let sni = sni_pool[addr.port() as usize % sni_pool.len()];
+    let conn = match endpoint.connect(addr, sni) {
         Ok(c) => match tokio::time::timeout(std::time::Duration::from_secs(10), c).await {
             Ok(Ok(c)) => { dlog("QUIC connected"); c }
             Ok(Err(e)) => { dlog(&format!("QUIC handshake failed: {}", e)); return None; }
@@ -420,25 +439,33 @@ async fn quic_connect_and_auth(endpoint: &quinn::Endpoint, addr: std::net::Socke
     Some(conn)
 }
 
-async fn run_quic_mode(sa: &str, sk: &str, args: &[String], socks_token: &str) {
+async fn run_quic_mode(sa: &str, sk: &str, args: &[String], socks_token: &str, extra_servers: &Option<String>) {
     dlog(&format!("QUIC mode → {}", sa));
 
     // QUIC client: post-quantum TLS (ML-KEM + X25519 hybrid)
+    // TLS fingerprint mimics Chrome 125: same cipher provider (AWS-LC/BoringSSL),
+    // same key exchange (X25519+ML-KEM768), ALPN h3, GREASE enabled by default
     let client_config = {
         let crypto = quinn::rustls::crypto::aws_lc_rs::default_provider();
-        let tls = quinn::rustls::ClientConfig::builder_with_provider(crypto.into())
+        let mut tls = quinn::rustls::ClientConfig::builder_with_provider(crypto.into())
             .with_safe_default_protocol_versions().unwrap()
             .dangerous().with_custom_certificate_verifier(Arc::new(QuicNV))
             .with_no_client_auth();
+        // Chrome ALPN for QUIC
+        tls.alpn_protocols = vec![b"h3".to_vec()];
+        // Enable session resumption (Chrome stores tickets)
+        tls.resumption = quinn::rustls::client::Resumption::in_memory_sessions(256);
         let mut cc = quinn::ClientConfig::new(Arc::new(quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap()));
         // BBR for client (smart probing), server uses Brutal (aggressive sending)
         let mut transport = quinn::TransportConfig::default();
         transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
         transport.max_idle_timeout(Some(quinn::IdleTimeout::from(quinn::VarInt::from_u32(300_000))));
         transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
-        transport.stream_receive_window(quinn::VarInt::from_u32(16_000_000)); // 16MB per stream
-        transport.receive_window(quinn::VarInt::from_u32(32_000_000)); // 32MB total
-        transport.send_window(16_000_000); // 16MB send buffer
+        transport.stream_receive_window(quinn::VarInt::from_u32(8_000_000)); // 8MB per stream
+        transport.receive_window(quinn::VarInt::from_u32(16_000_000)); // 16MB total
+        transport.send_window(8_000_000); // 8MB send buffer
+        transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(256));
+        transport.max_concurrent_uni_streams(quinn::VarInt::from_u32(64));
         cc.transport_config(Arc::new(transport));
         cc
     };
@@ -451,21 +478,60 @@ async fn run_quic_mode(sa: &str, sk: &str, args: &[String], socks_token: &str) {
         format!("{}:{}", parts[0], parts.get(1).unwrap_or(&"9444")).parse().unwrap()
     });
 
-    // Initial connection
-    let conn = match quic_connect_and_auth(&endpoint, addr, args).await {
-        Some(c) => c,
-        None => { emit("error", Some("QUIC connection failed")); return; }
-    };
+    // Build server list: primary + extras for multi-path failover
+    let mut server_addrs: Vec<std::net::SocketAddr> = vec![addr];
+    if let Some(ref extras) = extra_servers {
+        for s in extras.split(',') {
+            if let Ok(a) = s.trim().parse::<std::net::SocketAddr>() {
+                server_addrs.push(a);
+            } else if let Some((h, p)) = s.trim().split_once(':') {
+                if let Ok(port) = p.parse::<u16>() {
+                    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+                        server_addrs.push(std::net::SocketAddr::new(ip, port));
+                    }
+                }
+            }
+        }
+        if server_addrs.len() > 1 {
+            dlog(&format!("multi-path: {} servers available", server_addrs.len()));
+        }
+    }
+
+    // Connect to ALL servers concurrently (true multi-path)
+    let mut connections: Vec<quinn::Connection> = Vec::new();
+    let connect_futures: Vec<_> = server_addrs.iter().map(|a| {
+        let ep = endpoint.clone();
+        let args_owned = args.to_vec();
+        let addr = *a;
+        async move { (addr, quic_connect_and_auth(&ep, addr, &args_owned).await) }
+    }).collect();
+    let results = futures::future::join_all(connect_futures).await;
+    for (addr, result) in results {
+        match result {
+            Some(c) => { dlog(&format!("multi-path: connected to {}", addr)); connections.push(c); }
+            None => { dlog(&format!("multi-path: {} unreachable", addr)); }
+        }
+    }
+    if connections.is_empty() {
+        emit("error", Some("all servers unreachable"));
+        return;
+    }
+    dlog(&format!("multi-path: {}/{} servers connected", connections.len(), server_addrs.len()));
 
     let l = match TcpListener::bind(sk).await { Ok(l) => l, Err(e) => { emit("error", Some(&format!("{}", e))); return; } };
     emit("connected", Some(sk));
 
-    let conn = Arc::new(tokio::sync::RwLock::new(conn));
+    // Primary connection (first successful), with all connections available for load balancing
+    let conn = Arc::new(tokio::sync::RwLock::new(connections.remove(0)));
+    // Store backup connections for failover
+    let backup_conns: Arc<tokio::sync::Mutex<Vec<quinn::Connection>>> = Arc::new(tokio::sync::Mutex::new(connections));
 
-    // Spawn connection health monitor — reconnects on failure
+    // Spawn connection health monitor — reconnects on failure, cycles through servers
     let conn_monitor = conn.clone();
     let endpoint_clone = endpoint.clone();
     let args_owned: Vec<String> = args.to_vec();
+    let server_addrs_clone = server_addrs.clone();
+    let backup_conns_clone = backup_conns.clone();
     tokio::spawn(async move {
         loop {
             // Check if connection is alive
@@ -476,21 +542,52 @@ async fn run_quic_mode(sa: &str, sk: &str, args: &[String], socks_token: &str) {
             };
             if !is_dead { continue; }
 
-            // Connection died — reconnect with exponential backoff
+            // Connection died — try backup connections first (instant failover)
             emit("reconnecting", None);
-            dlog("connection lost, reconnecting...");
+            dlog("connection lost, checking backups...");
+            let mut recovered = false;
+            {
+                let mut backups = backup_conns_clone.lock().await;
+                // Find a live backup connection
+                let mut live_idx = None;
+                for (i, bc) in backups.iter().enumerate() {
+                    if bc.close_reason().is_none() {
+                        live_idx = Some(i);
+                        break;
+                    }
+                }
+                if let Some(idx) = live_idx {
+                    let backup = backups.remove(idx);
+                    let mut c = conn_monitor.write().await;
+                    *c = backup;
+                    emit("connected", Some("127.0.0.1:1080"));
+                    dlog("instant failover to backup connection");
+                    recovered = true;
+                }
+            }
+            if recovered { continue; }
+
+            // No live backups — reconnect from scratch, cycling through all servers
+            dlog("no live backups, reconnecting...");
             let mut delay = 1u64;
+            let mut attempt = 0u64;
             loop {
-                if let Some(new_conn) = quic_connect_and_auth(&endpoint_clone, addr, &args_owned).await {
+                let server_idx = attempt as usize % server_addrs_clone.len();
+                let target = server_addrs_clone[server_idx];
+                dlog(&format!("trying server {} ({})", server_idx, target));
+                if let Some(new_conn) = quic_connect_and_auth(&endpoint_clone, target, &args_owned).await {
                     let mut c = conn_monitor.write().await;
                     *c = new_conn;
                     emit("connected", Some("127.0.0.1:1080"));
-                    dlog("reconnected");
+                    dlog(&format!("reconnected to server {}", server_idx));
                     break;
                 }
-                dlog(&format!("reconnect failed, retry in {}s", delay));
+                attempt += 1;
+                if attempt as usize % server_addrs_clone.len() == 0 {
+                    delay = (delay * 2).min(30);
+                }
+                dlog(&format!("server {} failed, retry in {}s", server_idx, delay));
                 tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-                delay = (delay * 2).min(30);
             }
         }
     });

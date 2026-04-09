@@ -9,7 +9,7 @@
 //!     encrypted_payload = ChaCha20-Poly1305(key, nonce, [uuid:16][timestamp:8])
 //!   Server → Client: [server_ephemeral_pub:32][status:1] = 33 bytes
 //!
-//! Replay protection: timestamp must be within ±120s of server time.
+//! Replay protection: timestamp must be within ±15s of server time.
 
 use anyhow::{anyhow, Result};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, AeadInPlace, Nonce};
@@ -18,7 +18,7 @@ use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
 
 /// Max time drift allowed (seconds)
-const MAX_TIME_DRIFT: u64 = 120;
+const MAX_TIME_DRIFT: u64 = 15;
 
 /// Server-side handshake config
 #[derive(Clone)]

@@ -54,6 +54,15 @@ class MainActivity : FlutterActivity() {
                     }
                     result.success(true)
                 }
+                "getVpnLogs" -> {
+                    try {
+                        val process = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-t", "100", "-s", "FoggedVPN:*", "AndroidRuntime:*"))
+                        val logs = process.inputStream.bufferedReader().readText()
+                        result.success(logs)
+                    } catch (e: Exception) {
+                        result.success("Failed to read logs: ${e.message}")
+                    }
+                }
                 "stopVpn" -> {
                     val intent = Intent(this, FoggedVpnService::class.java)
                     intent.action = FoggedVpnService.ACTION_STOP

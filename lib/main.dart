@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:crypto/crypto.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'l10n/strings.dart';
 import 'models/vpn_server.dart';
 
@@ -45,6 +46,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   bool _loggedIn = false;
   String _uuid = '';
   String _telegramHandle = '';
+  static const _secureStorage = FlutterSecureStorage();
   bool _authLoading = false;
   bool _codeRequested = false;
   int _codeTimer = 0; // seconds remaining
@@ -117,7 +119,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiBase = 'https://dl.fogged.net';
-  String _appVersion = '1.5.1'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.5.2'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -141,8 +143,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   Future<void> _loadAuth() async {
     final prefs = await SharedPreferences.getInstance();
-    final uuid = prefs.getString('uuid') ?? '';
-    final handle = prefs.getString('telegram_handle') ?? '';
+    // Read UUID from secure storage (migrate from SharedPreferences if needed)
+    var uuid = await _secureStorage.read(key: 'uuid') ?? '';
+    final handle = await _secureStorage.read(key: 'telegram_handle') ?? '';
+    // Migration: if UUID in SharedPreferences but not in secure storage, migrate
+    if (uuid.isEmpty) {
+      uuid = prefs.getString('uuid') ?? '';
+      if (uuid.isNotEmpty) {
+        await _secureStorage.write(key: 'uuid', value: uuid);
+        await _secureStorage.write(key: 'telegram_handle', value: prefs.getString('telegram_handle') ?? '');
+        await prefs.remove('uuid'); // clean up plain storage
+        await prefs.remove('telegram_handle');
+      }
+    }
     final lang = prefs.getString('lang');
     if (lang == null) {
       // First launch — show language picker
@@ -346,9 +359,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         body: jsonEncode({'telegram_handle': _telegramHandle, 'code': code}));
       final j = jsonDecode(resp.body);
       if (j['ok'] == true && j['uuid'] != null) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('uuid', j['uuid']);
-        await prefs.setString('telegram_handle', _telegramHandle);
+        await _secureStorage.write(key: 'uuid', value: j['uuid']);
+        await _secureStorage.write(key: 'telegram_handle', value: _telegramHandle);
         _uuid = j['uuid'];
         await _fetchSubscription();
         setState(() { _loggedIn = true; });
@@ -361,9 +373,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   Future<void> _logout() async {
     await _disconnect();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('uuid');
-    await prefs.remove('telegram_handle');
+    await _secureStorage.delete(key: 'uuid');
+    await _secureStorage.delete(key: 'telegram_handle');
     setState(() { _loggedIn = false; _uuid = ''; _servers = []; _codeRequested = false; });
   }
 
@@ -415,12 +426,55 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       // OrcaX servers come from subscription now — no hardcoded duplicates
 
       if (servers.isEmpty && _servers.isNotEmpty) {
-        // Don't replace good server list with empty one (network blip)
         _addLog('subscription returned empty — keeping existing servers');
         return;
       }
+      // DNS fallback: if subscription returned no servers and we have none cached
+      if (servers.isEmpty && _servers.isEmpty) {
+        _addLog('no servers from subscription — trying DNS discovery...');
+        final dnsServers = await _dnsDiscoverServers();
+        servers.addAll(dnsServers);
+      }
       setState(() { _servers = servers; if (servers.isNotEmpty) _server = _filteredServers.isNotEmpty ? _filteredServers.first.name : servers.first.name; });
     } catch (e) { debugPrint('Sub fetch: $e'); }
+  }
+
+  /// DNS auto-discovery: fetch encrypted server list from TXT record
+  Future<List<VpnServer>> _dnsDiscoverServers() async {
+    try {
+      // Query DNS-over-HTTPS (Cloudflare) for TXT record
+      final resp = await http.get(
+        Uri.parse('https://cloudflare-dns.com/dns-query?name=_fogged.fogged.net&type=TXT'),
+        headers: {'Accept': 'application/dns-json'},
+      ).timeout(const Duration(seconds: 5));
+      if (resp.statusCode != 200) return [];
+      final j = jsonDecode(resp.body);
+      final answers = j['Answer'] as List? ?? [];
+      if (answers.isEmpty) return [];
+      final encrypted = (answers.first['data'] as String?)?.replaceAll('"', '') ?? '';
+      if (encrypted.isEmpty) return [];
+
+      // Decrypt with discovery key (XOR with SHA256 of key)
+      final keyBytes = sha256.convert(utf8.encode('fogged-discovery-2026-v1')).bytes;
+      final encBytes = base64.decode(encrypted);
+      final decBytes = List<int>.generate(encBytes.length, (i) => encBytes[i] ^ keyBytes[i % 32]);
+      final payload = utf8.decode(base64.decode(utf8.decode(decBytes)));
+      final servers = (jsonDecode(payload) as List).map((s) {
+        final type = s['server_type'] as String? ?? 'direct';
+        if (type == 'orcax') {
+          return VpnServer('orcax', s['name'] ?? 'OrcaX', '${s['ip']}:${s['port']}', {'pubkey': s['pubkey'] ?? ''});
+        } else if (type == 'cdn-ws') {
+          return VpnServer('orcax', 'CDN ${s['name']}', '${s['ip']}:${s['port']}', {'cdn': 'true'});
+        } else {
+          return VpnServer('vless', s['name'] ?? 'Server', '${s['ip']}:${s['port']}', {});
+        }
+      }).toList();
+      _addLog('DNS discovery: found ${servers.length} servers');
+      return servers;
+    } catch (e) {
+      _addLog('DNS discovery failed: $e');
+      return [];
+    }
   }
 
   VpnServer? _parseLine(String line) {
@@ -852,7 +906,7 @@ $conditions
         // Mobile: use Dart HTTP directly (VPN routes traffic)
         final start = DateTime.now();
         final resp = await http.get(Uri.parse('https://hel1-speed.hetzner.com/100MB.bin'),
-          headers: {'Range': 'bytes=0-5242879'}).timeout(const Duration(seconds: 30));
+          headers: {'Range': 'bytes=0-26214399'}).timeout(const Duration(seconds: 30));
         final elapsed = DateTime.now().difference(start);
         final bytes = resp.bodyBytes.length;
         final mbps = (bytes * 8) / (elapsed.inMilliseconds / 1000) / 1000000;
@@ -864,7 +918,7 @@ $conditions
       final result = await Process.run('curl', [
         '-x', 'socks5h://127.0.0.1:1080', '-so', devNull,
         '-w', '%{speed_download}|%{size_download}|%{time_total}|%{time_starttransfer}',
-        '-r', '0-5242879', 'https://hel1-speed.hetzner.com/100MB.bin', '--max-time', '30',
+        '-r', '0-26214399', 'https://hel1-speed.hetzner.com/100MB.bin', '--max-time', '30',
       ]);
       final parts = result.stdout.toString().split('|');
       if (parts.length >= 4) {
@@ -1275,7 +1329,7 @@ $conditions
         final result = await Process.run('curl', [
           '-x', 'socks5h://127.0.0.1:1080', '-so', Platform.isWindows ? 'NUL' : '/dev/null',
           '-w', '%{speed_download}|%{time_starttransfer}',
-          '-r', '0-5242879', 'https://hel1-speed.hetzner.com/100MB.bin', '--max-time', '15',
+          '-r', '0-26214399', 'https://hel1-speed.hetzner.com/100MB.bin', '--max-time', '15',
         ]);
         final parts = result.stdout.toString().split('|');
         if (parts.length >= 2) {
@@ -1401,6 +1455,17 @@ $conditions
         Row(children: [
           Text(L.tr('site_checker'), style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: 2)),
           const Spacer(),
+          if (_siteResults.isNotEmpty) GestureDetector(
+            onTap: () {
+              final blocked = _siteResults.where((r) => r['working'] == false).map((r) => r['site']).join('\n');
+              final working = _siteResults.where((r) => r['working'] == true).map((r) => r['site']).join('\n');
+              final text = 'Blocked:\n$blocked\n\nWorking:\n$working';
+              Clipboard.setData(ClipboardData(text: text));
+              _showMsg('Copied');
+            },
+            child: Padding(padding: const EdgeInsets.only(right: 8),
+              child: Icon(Icons.copy, size: 14, color: Colors.white.withValues(alpha: 0.3))),
+          ),
           if (_connected && !_checkingSites) GestureDetector(
             onTap: _checkSites,
             child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
