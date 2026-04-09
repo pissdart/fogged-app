@@ -121,7 +121,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       ? const ['OrcaX Pro Max', 'OrcaX VLESS']
       : const ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiBase = 'https://dl.fogged.net';
-  String _appVersion = '1.5.0'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.5.1'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -485,6 +485,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   Future<void> _startProxy() async {
     try {
+      if (_filteredServers.isEmpty) {
+        _showError('No servers available for $_protocol');
+        setState(() => _connecting = false);
+        return;
+      }
       final srv = _filteredServers.firstWhere((s) => s.name == _server, orElse: () => _filteredServers.first);
       final proto = srv.protocol;
 
@@ -995,7 +1000,7 @@ $conditions
             if (_connected) ...[
               Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
                 _statChip(L.tr('uptime'), _uptime),
-                _statChip(L.tr('downloaded'), _downloaded),
+                if (_downloaded != '0 B') _statChip(L.tr('downloaded'), _downloaded),
               ]),
               const SizedBox(height: 20),
             ],
@@ -1880,10 +1885,16 @@ class _SettingsScreenState extends State<_SettingsScreen> {
         final rules = 'block all\npass on lo0\npass out proto tcp to 127.0.0.1 port 1080\npass out proto udp to any port 53\n';
         final ksPath = '${Directory.systemTemp.path}/fogged-killswitch-${DateTime.now().millisecondsSinceEpoch}.conf';
         await File(ksPath).writeAsString(rules);
-        await Process.run('sudo', ['pfctl', '-ef', ksPath]);
+        // Use osascript for GUI sudo prompt (sudo alone fails silently from GUI apps)
+        final result = await Process.run('osascript', ['-e', 'do shell script "pfctl -ef $ksPath" with administrator privileges']);
         try { await File(ksPath).delete(); } catch (_) {}
+        if (result.exitCode != 0) {
+          setState(() => _killSwitch = false);
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setBool('kill_switch', false);
+        }
       } else {
-        await Process.run('sudo', ['pfctl', '-d']);
+        await Process.run('osascript', ['-e', 'do shell script "pfctl -d" with administrator privileges']);
       }
     }
   }
