@@ -122,7 +122,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiBase = 'https://dl.fogged.net';
-  String _appVersion = '1.5.3'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.5.2'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -820,101 +820,12 @@ tls:
 
   String? _connectedServerIp; // for TUN route management
 
-  /// Enable VPN routing — TUN mode on macOS (full traffic capture), proxy fallback elsewhere
   Future<void> _enableVpnRouting(String serverAddr) async {
-    final serverIp = serverAddr.split(':').first;
-    _connectedServerIp = serverIp;
-    if (Platform.isMacOS) {
-      await _startTunVpn(serverIp);
-    } else {
-      await _enableVpnRouting(_connectedServerIp ?? '');
-    }
+    await _setSystemProxy(true);
   }
 
   Future<void> _disableVpnRouting() async {
-    if (Platform.isMacOS && _tun2socksProcess != null) {
-      await _stopTunVpn(_connectedServerIp);
-    } else {
-      await _disableVpnRouting();
-    }
-  }
-
-  /// Start TUN-based VPN (macOS) — captures ALL traffic including WebRTC UDP
-  Future<void> _startTunVpn(String serverIp) async {
-    if (!Platform.isMacOS) return;
-    final tun2socks = await _findBinary('tun2socks');
-    if (tun2socks == null) {
-      _addLog('tun2socks not found — falling back to SOCKS proxy mode');
-      await _enableVpnRouting(_connectedServerIp ?? '');
-      return;
-    }
-
-    // Save original default gateway + DNS for restore on disconnect
-    final gwResult = await Process.run('route', ['-n', 'get', 'default']);
-    final gwMatch = RegExp(r'gateway:\s+(\S+)').firstMatch(gwResult.stdout.toString());
-    _originalDefaultGateway = gwMatch?.group(1);
-    final dnsResult = await Process.run('networksetup', ['-getdnsservers', 'Wi-Fi']);
-    _originalDns = dnsResult.stdout.toString().trim();
-    _addLog('original gateway: $_originalDefaultGateway');
-
-    // Start tun2socks: creates utun and routes SOCKS5 through it
-    _tun2socksProcess = await Process.start(tun2socks, [
-      '--device', 'utun99',
-      '--proxy', 'socks5://127.0.0.1:1080',
-      '--loglevel', 'warn',
-    ]);
-    _tun2socksProcess!.stdout.transform(utf8.decoder).listen((l) => _addLog('tun2socks: $l'));
-    _tun2socksProcess!.stderr.transform(utf8.decoder).listen((l) => _addLog('tun2socks: $l'));
-    await Future.delayed(const Duration(seconds: 1)); // Wait for utun to come up
-
-    // Configure utun99 as default route (requires admin — use osascript)
-    final setupScript = '''
-ifconfig utun99 10.255.0.1 10.255.0.2 up
-route delete default
-route add default 10.255.0.2
-route add $serverIp $_originalDefaultGateway
-networksetup -setdnsservers Wi-Fi 1.1.1.1 8.8.8.8
-''';
-    final scriptPath = _tempPath('tun-setup.sh');
-    await File(scriptPath).writeAsString(setupScript);
-    await Process.run('chmod', ['+x', scriptPath]);
-    final result = await Process.run('osascript', ['-e', 'do shell script "bash $scriptPath" with administrator privileges'])
-        .timeout(const Duration(seconds: 15), onTimeout: () {
-      _addLog('TUN setup: admin prompt timed out — falling back to SOCKS proxy');
-      return ProcessResult(0, 1, '', 'timeout');
-    });
-
-    if (result.exitCode == 0) {
-      _addLog('TUN mode active — ALL traffic routed through VPN');
-    } else {
-      _addLog('TUN setup failed (${result.stderr}) — falling back to SOCKS proxy');
-      _tun2socksProcess?.kill();
-      _tun2socksProcess = null;
-      await _enableVpnRouting(_connectedServerIp ?? '');
-    }
-  }
-
-  /// Stop TUN VPN and restore original routing
-  Future<void> _stopTunVpn(String? serverIp) async {
-    if (!Platform.isMacOS || _tun2socksProcess == null) return;
-
-    _tun2socksProcess?.kill();
-    _tun2socksProcess = null;
-
-    // Restore original routing
-    final restoreScript = '''
-route delete $serverIp 2>/dev/null
-route delete default 2>/dev/null
-route add default ${_originalDefaultGateway ?? ''}
-networksetup -setdnsservers Wi-Fi ${_originalDns == "There aren\\'t any DNS Servers set on Wi-Fi." ? 'empty' : _originalDns ?? 'empty'}
-ifconfig utun99 down 2>/dev/null
-''';
-    final scriptPath = _tempPath('tun-teardown.sh');
-    await File(scriptPath).writeAsString(restoreScript);
-    await Process.run('chmod', ['+x', scriptPath]);
-    await Process.run('osascript', ['-e', 'do shell script "bash $scriptPath" with administrator privileges'])
-        .timeout(const Duration(seconds: 10), onTimeout: () => ProcessResult(0, 1, '', ''));
-    _addLog('TUN mode stopped — routing restored');
+    await _setSystemProxy(false);
   }
 
   Future<void> _setSystemProxy(bool enable) async {
