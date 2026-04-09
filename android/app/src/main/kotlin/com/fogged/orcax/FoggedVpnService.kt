@@ -51,6 +51,7 @@ class FoggedVpnService : VpnService() {
         val server = prefs.getString("server", "") ?: ""
         val uuid = prefs.getString("uuid", "") ?: ""
         val protocol = prefs.getString("protocol", "quic") ?: "quic"
+        val config = prefs.getString("config", "") ?: ""
 
         if (server.isEmpty() || uuid.isEmpty()) {
             Log.e(TAG, "Missing server or uuid")
@@ -81,22 +82,41 @@ class FoggedVpnService : VpnService() {
         val fd = tunFd!!.fd
         Log.i(TAG, "TUN established, fd=$fd")
 
-        // Extract native binaries if needed
+        // Native binaries (Android requires .so extension in jniLibs)
         val nativeDir = applicationInfo.nativeLibraryDir
-        val orcaxBin = "$nativeDir/liborcax_connect.so"  // Android requires .so extension in jniLibs
+        val orcaxBin = "$nativeDir/liborcax_connect.so"
+        val xrayBin = "$nativeDir/libxray.so"
+        val hysteriaBin = "$nativeDir/libhysteria.so"
         val tun2socksBin = "$nativeDir/libtun2socks.so"
 
-        // Start orcax-connect (SOCKS5 proxy on localhost:1080)
+        // Start the right proxy binary based on protocol
         try {
-            val orcaxCmd = mutableListOf(orcaxBin,
-                "--server", server,
-                "--socks", "127.0.0.1:1080",
-                "--uuid", uuid,
-                "--protocol", protocol)
-            val pb = ProcessBuilder(orcaxCmd)
+            val cmd: List<String> = when (protocol) {
+                "xray" -> {
+                    // Write xray config to temp file
+                    val configFile = java.io.File(filesDir, "vless.json")
+                    configFile.writeText(config)
+                    listOf(xrayBin, "run", "-config", configFile.absolutePath)
+                }
+                "hysteria" -> {
+                    // Write hysteria config to temp file
+                    val configFile = java.io.File(filesDir, "hy2.yaml")
+                    configFile.writeText(config)
+                    listOf(hysteriaBin, "client", "-c", configFile.absolutePath)
+                }
+                else -> {
+                    // OrcaX (quic or tcp)
+                    mutableListOf(orcaxBin,
+                        "--server", server,
+                        "--socks", "127.0.0.1:1080",
+                        "--uuid", uuid,
+                        "--protocol", protocol)
+                }
+            }
+            val pb = ProcessBuilder(cmd)
             pb.redirectErrorStream(true)
             orcaxProcess = pb.start()
-            Log.i(TAG, "orcax-connect started: $server protocol=$protocol")
+            Log.i(TAG, "proxy started: $protocol → $server")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start orcax-connect: ${e.message}")
             stopVpn()

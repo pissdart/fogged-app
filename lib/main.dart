@@ -65,7 +65,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   // Connection
   bool _connected = false;
   bool _connecting = false;
-  String _protocol = Platform.isAndroid ? 'OrcaX Pro Max' : 'VLESS+Reality';
+  String _protocol = 'VLESS+Reality';
   String _server = '';
   String _uptime = '--';
   String _downloaded = '0 B';
@@ -115,11 +115,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   int _totalReferrals = 0;
   String _userRole = 'user'; // admin, supermod, user
 
-  // Android only supports OrcaX (orcax-connect is the bundled native binary)
-  // Desktop supports all protocols (xray, hysteria, orcax-connect all bundled)
-  static final _protocols = Platform.isAndroid
-      ? const ['OrcaX Pro Max', 'OrcaX VLESS']
-      : const ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
+  static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiBase = 'https://dl.fogged.net';
   String _appVersion = '1.5.1'; // Updated from PackageInfo at runtime
 
@@ -177,7 +173,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         setState(() => _connecting = true);
         _startProxy();
       }
+      // Background refresh: re-fetch subscription every 5 minutes
+      _startSubscriptionRefresh();
     }
+  }
+
+  void _startSubscriptionRefresh() {
+    Future.delayed(const Duration(minutes: 5), () async {
+      if (!mounted || _uuid.isEmpty) return;
+      await _fetchSubscription();
+      _startSubscriptionRefresh(); // schedule next
+    });
   }
 
   Future<void> _fetchAccountInfo() async {
@@ -408,6 +414,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
       // OrcaX servers come from subscription now — no hardcoded duplicates
 
+      if (servers.isEmpty && _servers.isNotEmpty) {
+        // Don't replace good server list with empty one (network blip)
+        _addLog('subscription returned empty — keeping existing servers');
+        return;
+      }
       setState(() { _servers = servers; if (servers.isNotEmpty) _server = _filteredServers.isNotEmpty ? _filteredServers.first.name : servers.first.name; });
     } catch (e) { debugPrint('Sub fetch: $e'); }
   }
@@ -495,13 +506,25 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
       // Android: use native VpnService instead of Process.run
       if (Platform.isAndroid) {
-        // Request POST_NOTIFICATIONS permission on Android 13+ (needed for foreground service)
         try { await _androidVpn.invokeMethod('requestNotificationPermission'); } catch (_) {}
+        // Determine which binary and config to use
+        String androidProto;
+        String androidConfig = '';
+        if (proto == 'vless') {
+          androidProto = 'xray';
+          androidConfig = _generateXrayConfig(srv, _uuid);
+        } else if (proto == 'hysteria2') {
+          androidProto = 'hysteria';
+          androidConfig = _generateHy2Config(srv, _uuid);
+        } else {
+          androidProto = _protocol == 'OrcaX Pro Max' ? 'quic' : 'tcp';
+        }
         final result = await _androidVpn.invokeMethod('startVpn', {
           'server': srv.addr,
           'uuid': _uuid,
-          'protocol': _protocol == 'OrcaX Pro Max' ? 'quic' : 'tcp',
+          'protocol': androidProto,
           'pubkey': srv.params['pubkey'] ?? '',
+          'config': androidConfig,
         });
         if (result == true) {
           setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
@@ -1740,10 +1763,20 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             // Mark this version as installed so we don't prompt again
             final p = await SharedPreferences.getInstance();
             await p.setString('update_installed_version', widget.version);
-            setState(() => _status = 'Restarting...');
-            // Launch the new app before exiting — more reliable than a background script
-            await Process.start('open', ['-n', '/Applications/Fogged.app'], mode: ProcessStartMode.detached);
-            await Future.delayed(const Duration(seconds: 2));
+            setState(() => _status = 'Updated! Restarting...');
+            // Use a tiny helper script: wait for old app to exit, then launch new one
+            final relaunchScript = '${Directory.systemTemp.path}/fogged-relaunch-${DateTime.now().millisecondsSinceEpoch}.sh';
+            await File(relaunchScript).writeAsString(
+              '#!/bin/bash\n'
+              '# Wait for old Fogged to fully exit\n'
+              'while pgrep -x "Fogged" > /dev/null 2>&1; do sleep 0.5; done\n'
+              'sleep 1\n'
+              'open /Applications/Fogged.app\n'
+              'rm -f "\$0"\n'
+            );
+            await Process.run('chmod', ['+x', relaunchScript]);
+            await Process.start(relaunchScript, [], mode: ProcessStartMode.detached);
+            await Future.delayed(const Duration(milliseconds: 500));
             exit(0);
           }
         }

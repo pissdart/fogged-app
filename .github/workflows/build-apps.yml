@@ -115,12 +115,21 @@ jobs:
 
       - name: Prepare native libs
         run: |
-          mkdir -p orcax/app/android/app/src/main/jniLibs/arm64-v8a
-          cp orcax/target/aarch64-linux-android/release/orcax-connect orcax/app/android/app/src/main/jniLibs/arm64-v8a/liborcax_connect.so
-          # Download tun2socks
+          JNILIBS="orcax/app/android/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$JNILIBS"
+          # orcax-connect (built above)
+          cp orcax/target/aarch64-linux-android/release/orcax-connect "$JNILIBS/liborcax_connect.so"
+          # tun2socks
           curl -sL "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-arm64.zip" -o /tmp/tun2socks.zip
           unzip -o /tmp/tun2socks.zip -d /tmp/tun2socks/
-          cp /tmp/tun2socks/tun2socks-linux-arm64 orcax/app/android/app/src/main/jniLibs/arm64-v8a/libtun2socks.so
+          cp /tmp/tun2socks/tun2socks-linux-arm64 "$JNILIBS/libtun2socks.so"
+          # Xray v25.3.6 — Android ARM64
+          curl -sL "https://github.com/XTLS/Xray-core/releases/download/v25.3.6/Xray-android-arm64-v8a.zip" -o /tmp/xray.zip
+          unzip -o /tmp/xray.zip xray -d /tmp/xray-bin/
+          cp /tmp/xray-bin/xray "$JNILIBS/libxray.so"
+          # Hysteria2 v2.6.1 — Android ARM64
+          curl -sL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.1/hysteria-android-arm64" -o "$JNILIBS/libhysteria.so"
+          chmod +x "$JNILIBS"/*
 
       - name: Setup Java
         uses: actions/setup-java@v4

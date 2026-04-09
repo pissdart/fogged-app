@@ -24,6 +24,7 @@ class MainActivity : FlutterActivity() {
                     val uuid = call.argument<String>("uuid") ?: ""
                     val protocol = call.argument<String>("protocol") ?: "quic"
                     val pubkey = call.argument<String>("pubkey") ?: ""
+                    val config = call.argument<String>("config") ?: ""
 
                     // Store connection params for the service
                     val prefs = getSharedPreferences("vpn", MODE_PRIVATE)
@@ -32,6 +33,7 @@ class MainActivity : FlutterActivity() {
                         .putString("uuid", uuid)
                         .putString("protocol", protocol)
                         .putString("pubkey", pubkey)
+                        .putString("config", config)
                         .apply()
 
                     // Request VPN permission
