@@ -37,37 +37,35 @@ jobs:
           channel: stable
 
       - name: Flutter pub get
-        working-directory: orcax/app
         run: flutter pub get
 
       - name: Build Windows app
-        working-directory: orcax/app
         run: flutter build windows --release
 
       - name: Bundle VPN binaries
         shell: bash
         run: |
-          RELEASE_DIR="orcax/app/build/windows/x64/runner/Release"
+          RELEASE_DIR="build/windows/x64/runner/Release"
           # orcax-connect (built above)
           cp orcax/target/release/orcax-connect.exe "$RELEASE_DIR/"
           # Xray v25.3.6 — Windows x64
-          curl -sL "https://github.com/XTLS/Xray-core/releases/download/v25.3.6/Xray-windows-64.zip" -o /tmp/xray.zip
+          curl -sfL "https://github.com/XTLS/Xray-core/releases/download/v25.3.6/Xray-windows-64.zip" -o /tmp/xray.zip
           7z e /tmp/xray.zip xray.exe -o"$RELEASE_DIR" -y
           # Hysteria2 v2.6.1 — Windows x64
-          curl -sL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.1/hysteria-windows-amd64.exe" -o "$RELEASE_DIR/hysteria.exe"
+          curl -sfL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.1/hysteria-windows-amd64.exe" -o "$RELEASE_DIR/hysteria.exe"
+          # Verify downloads
+          test -s "$RELEASE_DIR/xray.exe" || { echo "ERROR: xray.exe missing"; exit 1; }
+          test -s "$RELEASE_DIR/hysteria.exe" || { echo "ERROR: hysteria.exe missing"; exit 1; }
 
       - name: Build Windows installer
         shell: bash
         run: |
-          # Install Inno Setup via Chocolatey
           choco install innosetup -y --no-progress
-          # Get version from pubspec.yaml
-          VERSION=$(grep '^version:' orcax/app/pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
-          # Build installer
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
           "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
             "/DMyAppVersion=$VERSION" \
-            orcax/app/windows/installer.iss
-          mv orcax/app/windows/Fogged-Setup.exe "$GITHUB_WORKSPACE/Fogged-Setup.exe"
+            windows/installer.iss
+          mv windows/Fogged-Setup.exe "$GITHUB_WORKSPACE/Fogged-Setup.exe"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -115,7 +113,7 @@ jobs:
 
       - name: Prepare native libs
         run: |
-          JNILIBS="orcax/app/android/app/src/main/jniLibs/arm64-v8a"
+          JNILIBS="android/app/src/main/jniLibs/arm64-v8a"
           mkdir -p "$JNILIBS"
           # orcax-connect (built above)
           cp orcax/target/aarch64-linux-android/release/orcax-connect "$JNILIBS/liborcax_connect.so"
@@ -150,8 +148,8 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > orcax/app/android/app/fogged-release.jks
-          cat > orcax/app/android/app/key.properties <<EOF
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > android/app/fogged-release.jks
+          cat > android/app/key.properties <<EOF
           storePassword=$KEYSTORE_PASSWORD
           keyPassword=$KEY_PASSWORD
           keyAlias=$KEY_ALIAS
@@ -159,7 +157,7 @@ jobs:
           EOF
 
       - name: Build APK and AAB
-        working-directory: orcax/app
+        working-directory: .
         run: |
           flutter pub get
           flutter build apk --release
@@ -169,13 +167,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fogged-android
-          path: orcax/app/build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/app-release.apk
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
         with:
           name: fogged-android-aab
-          path: orcax/app/build/app/outputs/bundle/release/app-release.aab
+          path: build/app/outputs/bundle/release/app-release.aab
 
   build-macos:
     name: macOS App
@@ -208,7 +206,7 @@ jobs:
           channel: stable
 
       - name: Build macOS app
-        working-directory: orcax/app
+        working-directory: .
         run: |
           flutter pub get
           flutter build macos --release
@@ -227,14 +225,14 @@ jobs:
 
       - name: Bundle and create DMG
         run: |
-          APP_MACOS="orcax/app/build/macos/Build/Products/Release/Fogged.app/Contents/MacOS"
+          APP_MACOS="build/macos/Build/Products/Release/Fogged.app/Contents/MacOS"
           cp orcax/target/release/orcax-connect "$APP_MACOS/"
           cp /tmp/xray-bin/xray "$APP_MACOS/"
           cp /tmp/tun2socks-mac/tun2socks-darwin-arm64 "$APP_MACOS/tun2socks"
           cp /tmp/hysteria "$APP_MACOS/"
           brew install create-dmg
-          create-dmg --volname "Fogged VPN" --window-pos 200 120 --window-size 600 400 --icon-size 100 --icon "Fogged.app" 150 190 --app-drop-link 450 190 --hide-extension "Fogged.app" --no-internet-enable Fogged-macOS.dmg "orcax/app/build/macos/Build/Products/Release/Fogged.app"
-          cd "orcax/app/build/macos/Build/Products/Release" && zip -r "$GITHUB_WORKSPACE/Fogged-macOS.zip" Fogged.app
+          create-dmg --volname "Fogged VPN" --window-pos 200 120 --window-size 600 400 --icon-size 100 --icon "Fogged.app" 150 190 --app-drop-link 450 190 --hide-extension "Fogged.app" --no-internet-enable Fogged-macOS.dmg "build/macos/Build/Products/Release/Fogged.app"
+          cd "build/macos/Build/Products/Release" && zip -r "$GITHUB_WORKSPACE/Fogged-macOS.zip" Fogged.app
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

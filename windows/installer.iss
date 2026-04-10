@@ -34,12 +34,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "autostart"; Description: "Start Fogged VPN on Windows login"; GroupDescription: "System:"
 
 [Files]
-; Flutter app + all DLLs
-Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
-; VPN protocol binaries (bundled — user never sees these)
-Source: "build\windows\x64\runner\Release\orcax-connect.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "build\windows\x64\runner\Release\xray.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "build\windows\x64\runner\Release\hysteria.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Flutter app + all DLLs (relative to repo root where iscc is called)
+Source: "..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
