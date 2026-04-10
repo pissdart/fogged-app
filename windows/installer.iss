@@ -2,7 +2,7 @@
 ; Built automatically by CI — do not compile manually unless testing
 
 #define MyAppName "Fogged VPN"
-#define MyAppExeName "fogged.exe"
+#define MyAppExeName "orcax.exe"
 #define MyAppPublisher "Fogged"
 #define MyAppURL "https://fogged.net"
 
@@ -12,7 +12,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-DefaultDirName={autopf}\Fogged
+DefaultDirName={localappdata}\Fogged
 DefaultGroupName={#MyAppName}
 OutputBaseFilename=Fogged-Setup
 OutputDir=.
