@@ -195,32 +195,11 @@ async fn main() {
         dlog("transport probe: trying QUIC...");
         run_quic_mode(&sa, &sk, &args, &socks_token, &extra_servers).await;
 
-        // QUIC failed → try TCP Reality (looks like HTTPS to ozon.ru)
+        // QUIC failed → fall through to TCP Reality (looks like HTTPS to ozon.ru)
         dlog("QUIC unavailable, falling back to TCP Reality...");
         emit("connecting", Some("TCP stealth"));
-        let tcp_addr = sa.replace(":9446", ":9443").replace(":9444", ":9443");
-        // Re-run ourselves with TCP mode (reuses the full TLS mux path below)
-        let exe = std::env::current_exe().unwrap_or_default();
-        let mut tcp_args_vec = vec![
-            "--server".to_string(), tcp_addr,
-            "--socks".to_string(), sk.clone(),
-            "--uuid".to_string(), arg(&args, "--uuid").unwrap_or_default(),
-            "--protocol".to_string(), "tcp".to_string(),
-        ];
-        if let Some(ref url) = cdn_url { tcp_args_vec.extend(["--cdn-url".to_string(), url.clone()]); }
-        if let Some(ref pk) = arg(&args, "--pubkey") { tcp_args_vec.extend(["--pubkey".to_string(), pk.clone()]); }
-        let tcp_result = tokio::process::Command::new(&exe).args(&tcp_args_vec)
-            .stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit())
-            .status().await;
-        if tcp_result.map(|s| s.success()).unwrap_or(false) { return; }
-
-        // TCP also failed → CDN WebSocket as last resort
-        if let Some(ref url) = cdn_url {
-            dlog("TCP unavailable, trying CDN WebSocket...");
-            emit("connecting", Some("CDN tunnel"));
-            run_ws_cdn_mode(url, &sa, &sk, &args, &socks_token).await;
-        }
-        return;
+        sa = sa.replace(":9446", ":9443").replace(":9444", ":9443");
+        // Fall through to TCP code path below
     }
 
     // Establish ONE control TLS connection (mux for StreamOpen/Close)

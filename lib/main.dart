@@ -121,8 +121,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   String _userRole = 'user'; // admin, supermod, user
 
   static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
-  static const _apiBase = 'https://dl.fogged.net';
-  String _appVersion = '1.5.4'; // Updated from PackageInfo at runtime
+  static const _apiEndpoints = [
+    'https://dl.fogged.net',           // Primary (Cloudflare-fronted)
+    'https://fogged-api.anon-dev.workers.dev', // Cloudflare Worker #1
+    'https://fogged-api-2.anon-dev.workers.dev', // Cloudflare Worker #2
+    'https://fogged-api-3.anon-dev.workers.dev', // Cloudflare Worker #3
+  ];
+  String _apiBase = _apiEndpoints.first;
+  int _apiEndpointIndex = 0;
+  bool _usingFallbackApi = false;
+  bool _usingCachedServers = false;
+  String _appVersion = '1.5.5'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -134,13 +143,53 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     });
     // Load version from package info (single source of truth: pubspec.yaml)
     PackageInfo.fromPlatform().then((info) { if (mounted) setState(() => _appVersion = info.version); });
-    _loadAuth();
+    _probeApiAndLoad();
     // Check for updates on every app start (all platforms)
     Future.delayed(const Duration(seconds: 2), _checkForUpdate);
   }
 
   @override
   void dispose() { _pulseController.dispose(); _disconnect(); super.dispose(); }
+
+  /// Probe API endpoints in order; use first that responds
+  Future<void> _probeApiAndLoad() async {
+    for (var i = 0; i < _apiEndpoints.length; i++) {
+      try {
+        await http.get(Uri.parse('${_apiEndpoints[i]}/health')).timeout(const Duration(seconds: 3));
+        _apiBase = _apiEndpoints[i];
+        _apiEndpointIndex = i;
+        _usingFallbackApi = i > 0;
+        if (i > 0) debugPrint('Using fallback API #$i: ${_apiEndpoints[i]}');
+        _loadAuth();
+        return;
+      } catch (_) {
+        debugPrint('API endpoint #$i unreachable: ${_apiEndpoints[i]}');
+      }
+    }
+    // All endpoints failed — use first fallback and hope for recovery
+    debugPrint('All API endpoints unreachable, defaulting to Worker #1');
+    _apiBase = _apiEndpoints.length > 1 ? _apiEndpoints[1] : _apiEndpoints[0];
+    _apiEndpointIndex = _apiEndpoints.length > 1 ? 1 : 0;
+    _usingFallbackApi = true;
+    _loadAuth();
+  }
+
+  /// Cycle to next API endpoint on request failure; returns true if more endpoints available
+  Future<bool> _cycleApiEndpoint() async {
+    final startIndex = _apiEndpointIndex;
+    for (var i = 1; i < _apiEndpoints.length; i++) {
+      final idx = (startIndex + i) % _apiEndpoints.length;
+      try {
+        await http.get(Uri.parse('${_apiEndpoints[idx]}/health')).timeout(const Duration(seconds: 3));
+        _apiBase = _apiEndpoints[idx];
+        _apiEndpointIndex = idx;
+        _usingFallbackApi = idx > 0;
+        debugPrint('Cycled to API endpoint #$idx: ${_apiEndpoints[idx]}');
+        return true;
+      } catch (_) {}
+    }
+    return false;
+  }
 
   // ── Auth ──
 
@@ -205,7 +254,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Future<void> _fetchAccountInfo() async {
     if (_uuid.isEmpty) return;
     try {
-      final resp = await http.get(Uri.parse('$_apiBase/account/$_uuid'));
+      final resp = await http.get(Uri.parse('$_apiBase/account/$_uuid')).timeout(const Duration(seconds: 10));
       if (resp.statusCode == 200) {
         final j = jsonDecode(resp.body);
         setState(() {
@@ -254,7 +303,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           'protocol': _protocol,
           'server': _server,
           'mode': _mode,
-        }));
+        })).timeout(const Duration(seconds: 10));
     } catch (e) { debugPrint('Settings sync: $e'); }
   }
 
@@ -267,7 +316,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       final now = DateTime.now().millisecondsSinceEpoch;
       if (now - lastDismissed < 86400000) return;
 
-      final resp = await http.get(Uri.parse('$_apiBase/version'));
+      final resp = await http.get(Uri.parse('$_apiBase/version')).timeout(const Duration(seconds: 10));
       if (resp.statusCode != 200) return;
       final j = jsonDecode(resp.body);
       final latest = j['version'] as String? ?? _appVersion;
@@ -333,7 +382,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     try {
       final resp = await http.post(Uri.parse('$_apiBase/auth/request'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'telegram_handle': handle}));
+        body: jsonEncode({'telegram_handle': handle})).timeout(const Duration(seconds: 10));
       final j = jsonDecode(resp.body);
       if (j['ok'] == true) {
         setState(() { _codeRequested = true; _telegramHandle = handle; _codeTimer = 300; });
@@ -359,7 +408,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     try {
       final resp = await http.post(Uri.parse('$_apiBase/auth/verify'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'telegram_handle': _telegramHandle, 'code': code}));
+        body: jsonEncode({'telegram_handle': _telegramHandle, 'code': code})).timeout(const Duration(seconds: 10));
       final j = jsonDecode(resp.body);
       if (j['ok'] == true && j['uuid'] != null) {
         await _secureStorage.write(key: 'uuid', value: j['uuid']);
@@ -394,7 +443,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       final servers = <VpnServer>[];
 
       // 1. Fetch VLESS/CDN from subs endpoint
-      final resp = await http.get(Uri.parse('$_apiBase/subs/$_uuid?mode=$_mode'));
+      final resp = await http.get(Uri.parse('$_apiBase/subs/$_uuid?mode=$_mode')).timeout(const Duration(seconds: 10));
       if (resp.statusCode == 200) {
         final decoded = utf8.decode(base64.decode(resp.body.trim()));
         for (final line in decoded.split('\n').where((l) => l.isNotEmpty)) {
@@ -409,7 +458,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       }
 
       // 2. Fetch HY2 from singbox endpoint
-      final sbResp = await http.get(Uri.parse('$_apiBase/singbox/$_uuid?mode=$_mode'));
+      final sbResp = await http.get(Uri.parse('$_apiBase/singbox/$_uuid?mode=$_mode')).timeout(const Duration(seconds: 10));
       if (sbResp.statusCode == 200) {
         try {
           final j = jsonDecode(sbResp.body);
@@ -438,44 +487,122 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         final dnsServers = await _dnsDiscoverServers();
         servers.addAll(dnsServers);
       }
+      // Offline fallback: load cached servers from disk
+      if (servers.isEmpty && _servers.isEmpty) {
+        final cached = await _loadCachedServers();
+        if (cached.isNotEmpty) {
+          _addLog('loaded ${cached.length} servers from cache');
+          _usingCachedServers = true;
+          servers.addAll(cached);
+        }
+      }
+      if (servers.isNotEmpty) _cacheServers(servers);
+      _usingCachedServers = false;
       setState(() { _servers = servers; if (servers.isNotEmpty) _server = _filteredServers.isNotEmpty ? _filteredServers.first.name : servers.first.name; });
-    } catch (e) { debugPrint('Sub fetch: $e'); }
+    } catch (e) {
+      debugPrint('Sub fetch failed: $e');
+      // Try cycling to another API endpoint and retry once
+      if (await _cycleApiEndpoint()) {
+        debugPrint('Retrying subscription fetch on new endpoint...');
+        try {
+          final servers = <VpnServer>[];
+          final resp = await http.get(Uri.parse('$_apiBase/subs/$_uuid?mode=$_mode')).timeout(const Duration(seconds: 10));
+          if (resp.statusCode == 200) {
+            final decoded = utf8.decode(base64.decode(resp.body.trim()));
+            for (final line in decoded.split('\n').where((l) => l.isNotEmpty)) {
+              final s = _parseLine(line);
+              if (s != null) servers.add(s);
+            }
+          }
+          final sbResp = await http.get(Uri.parse('$_apiBase/singbox/$_uuid?mode=$_mode')).timeout(const Duration(seconds: 10));
+          if (sbResp.statusCode == 200) {
+            try {
+              final j = jsonDecode(sbResp.body);
+              final outbounds = j['outbounds'] as List? ?? [];
+              for (final ob in outbounds) {
+                if (ob['type'] == 'hysteria2') {
+                  final name = ob['tag'] as String? ?? 'HY2';
+                  final ip = ob['server'] as String? ?? '';
+                  final port = ob['server_port'] as int? ?? 20000;
+                  final obfs = ob['obfs']?['password'] as String? ?? '';
+                  servers.add(VpnServer('hysteria2', name, '$ip:$port', {'obfs-password': obfs}));
+                }
+              }
+            } catch (e2) { debugPrint('Singbox parse retry: $e2'); }
+          }
+          if (servers.isNotEmpty) {
+            setState(() { _servers = servers; _server = _filteredServers.isNotEmpty ? _filteredServers.first.name : servers.first.name; });
+          }
+        } catch (e2) { debugPrint('Sub fetch retry also failed: $e2'); }
+      }
+    }
   }
 
-  /// DNS auto-discovery: fetch encrypted server list from TXT record
+  /// DNS auto-discovery: fetch encrypted server list from TXT record via multiple DoH providers
   Future<List<VpnServer>> _dnsDiscoverServers() async {
-    try {
-      // Query DNS-over-HTTPS (Cloudflare) for TXT record
-      final resp = await http.get(
-        Uri.parse('https://cloudflare-dns.com/dns-query?name=_fogged.fogged.net&type=TXT'),
-        headers: {'Accept': 'application/dns-json'},
-      ).timeout(const Duration(seconds: 5));
-      if (resp.statusCode != 200) return [];
-      final j = jsonDecode(resp.body);
-      final answers = j['Answer'] as List? ?? [];
-      if (answers.isEmpty) return [];
-      final encrypted = (answers.first['data'] as String?)?.replaceAll('"', '') ?? '';
-      if (encrypted.isEmpty) return [];
+    // Try multiple DoH providers — Cloudflare, Google, Quad9
+    const dohProviders = [
+      'https://cloudflare-dns.com/dns-query?name=_fogged.fogged.net&type=TXT',
+      'https://dns.google/resolve?name=_fogged.fogged.net&type=TXT',
+      'https://dns.quad9.net:5053/dns-query?name=_fogged.fogged.net&type=TXT',
+    ];
+    for (final dohUrl in dohProviders) {
+      try {
+        final resp = await http.get(
+          Uri.parse(dohUrl),
+          headers: {'Accept': 'application/dns-json'},
+        ).timeout(const Duration(seconds: 5));
+        if (resp.statusCode != 200) continue;
+        final j = jsonDecode(resp.body);
+        final answers = j['Answer'] as List? ?? [];
+        if (answers.isEmpty) continue;
+        final encrypted = (answers.first['data'] as String?)?.replaceAll('"', '') ?? '';
+        if (encrypted.isEmpty) continue;
 
-      // Decrypt with discovery key (XOR with SHA256 of key)
-      final keyBytes = sha256.convert(utf8.encode('fogged-discovery-2026-v1')).bytes;
-      final encBytes = base64.decode(encrypted);
-      final decBytes = List<int>.generate(encBytes.length, (i) => encBytes[i] ^ keyBytes[i % 32]);
-      final payload = utf8.decode(base64.decode(utf8.decode(decBytes)));
-      final servers = (jsonDecode(payload) as List).map((s) {
-        final type = s['server_type'] as String? ?? 'direct';
-        if (type == 'orcax') {
-          return VpnServer('orcax', s['name'] ?? 'OrcaX', '${s['ip']}:${s['port']}', {'pubkey': s['pubkey'] ?? ''});
-        } else if (type == 'cdn-ws') {
-          return VpnServer('orcax', 'CDN ${s['name']}', '${s['ip']}:${s['port']}', {'cdn': 'true'});
-        } else {
-          return VpnServer('vless', s['name'] ?? 'Server', '${s['ip']}:${s['port']}', {});
-        }
-      }).toList();
-      _addLog('DNS discovery: found ${servers.length} servers');
-      return servers;
+        // Decrypt with discovery key (XOR with SHA256 of key)
+        final keyBytes = sha256.convert(utf8.encode('fogged-discovery-2026-v1')).bytes;
+        final encBytes = base64.decode(encrypted);
+        final decBytes = List<int>.generate(encBytes.length, (i) => encBytes[i] ^ keyBytes[i % 32]);
+        final payload = utf8.decode(base64.decode(utf8.decode(decBytes)));
+        final servers = (jsonDecode(payload) as List).map((s) {
+          final type = s['server_type'] as String? ?? 'direct';
+          if (type == 'orcax') {
+            return VpnServer('orcax', s['name'] ?? 'OrcaX', '${s['ip']}:${s['port']}', {'pubkey': s['pubkey'] ?? ''});
+          } else if (type == 'cdn-ws') {
+            return VpnServer('orcax', 'CDN ${s['name']}', '${s['ip']}:${s['port']}', {'cdn': 'true'});
+          } else {
+            return VpnServer('vless', s['name'] ?? 'Server', '${s['ip']}:${s['port']}', {});
+          }
+        }).toList();
+        _addLog('DNS discovery via ${Uri.parse(dohUrl).host}: found ${servers.length} servers');
+        return servers;
+      } catch (e) {
+        debugPrint('DoH ${Uri.parse(dohUrl).host} failed: $e');
+      }
+    }
+    _addLog('DNS discovery failed on all providers');
+    return [];
+  }
+
+  /// Persist servers to SharedPreferences for offline use
+  Future<void> _cacheServers(List<VpnServer> servers) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final json = jsonEncode(servers.map((s) => s.toJson()).toList());
+      await prefs.setString('cached_servers_$_mode', json);
+    } catch (e) { debugPrint('Cache servers: $e'); }
+  }
+
+  /// Load servers from SharedPreferences cache
+  Future<List<VpnServer>> _loadCachedServers() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final json = prefs.getString('cached_servers_$_mode');
+      if (json == null || json.isEmpty) return [];
+      final list = jsonDecode(json) as List;
+      return list.map((j) => VpnServer.fromJson(j as Map<String, dynamic>)).toList();
     } catch (e) {
-      _addLog('DNS discovery failed: $e');
+      debugPrint('Load cached servers: $e');
       return [];
     }
   }
@@ -1387,7 +1514,7 @@ $conditions
       }).toList();
       await http.post(Uri.parse('$_apiBase/speedtest/report'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'uuid': _uuid, 'region': _mode, 'results': results}));
+        body: jsonEncode({'uuid': _uuid, 'region': _mode, 'results': results})).timeout(const Duration(seconds: 10));
     } catch (_) {}
   }
 
@@ -1395,7 +1522,7 @@ $conditions
     setState(() { _testingSni = true; _sniResults = []; });
     try {
       // Fetch SNI list from API
-      final resp = await http.get(Uri.parse('$_apiBase/sni/list'));
+      final resp = await http.get(Uri.parse('$_apiBase/sni/list')).timeout(const Duration(seconds: 10));
       if (resp.statusCode != 200) return;
       final snis = (jsonDecode(resp.body) as List).cast<String>();
       if (snis.isEmpty) return;
@@ -1428,7 +1555,7 @@ $conditions
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'uuid': _uuid, 'country': _mode, 'results': _sniResults.map((r) => {
           'sni': r['sni'], 'latency_ms': r['latency'], 'status': r['status'],
-        }).toList()}));
+        }).toList()})).timeout(const Duration(seconds: 10));
     } catch (_) {}
   }
 
@@ -1535,7 +1662,7 @@ $conditions
 
   Future<void> _fetchBlockedStats() async {
     try {
-      final resp = await http.get(Uri.parse('$_apiBase/blocked/stats'));
+      final resp = await http.get(Uri.parse('$_apiBase/blocked/stats')).timeout(const Duration(seconds: 10));
       if (resp.statusCode == 200) {
         final j = jsonDecode(resp.body);
         final total = j['total_blocked_domains'] ?? 0;
@@ -1576,7 +1703,7 @@ $conditions
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'uuid': _uuid, 'results': _siteResults.map((r) => {
           'site': r['site'], 'working': r['working'], 'server': _server, 'protocol': _protocol,
-        }).toList()}));
+        }).toList()})).timeout(const Duration(seconds: 10));
     } catch (_) {}
   }
 
@@ -2226,7 +2353,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
                 await p.remove('update_installed_version');
                 await p.remove('update_skipped_version');
 
-                final resp = await http.get(Uri.parse('${widget.apiBase}/version'));
+                final resp = await http.get(Uri.parse('${widget.apiBase}/version')).timeout(const Duration(seconds: 10));
                 if (resp.statusCode == 200) {
                   final j = jsonDecode(resp.body);
                   final latest = j['version'] as String? ?? '';
@@ -2279,7 +2406,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
       }
       await http.post(Uri.parse('${widget.apiBase}/support/create'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'uuid': widget.uuid, 'message': body}));
+        body: jsonEncode({'uuid': widget.uuid, 'message': body})).timeout(const Duration(seconds: 10));
       _supportCtl.clear();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(L.tr('report_sent'))));
