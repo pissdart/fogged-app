@@ -58,14 +58,12 @@ jobs:
           test -s "$RELEASE_DIR/hysteria.exe" || { echo "ERROR: hysteria.exe missing"; exit 1; }
 
       - name: Build Windows installer
-        shell: bash
+        shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
-          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
-            "/DMyAppVersion=$VERSION" \
-            windows/installer.iss
-          mv windows/Fogged-Setup.exe "$GITHUB_WORKSPACE/Fogged-Setup.exe"
+          $version = (Select-String -Path pubspec.yaml -Pattern "^version:" | ForEach-Object { $_.Line -replace "version: ", "" -replace "\+.*", "" }).Trim()
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "windows\installer.iss"
+          Move-Item "windows\Fogged-Setup.exe" "$env:GITHUB_WORKSPACE\Fogged-Setup.exe"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
