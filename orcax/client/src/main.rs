@@ -101,11 +101,11 @@ async fn connect_and_auth(sa: &str) -> Result<(TlsStream, [u8; 16])> {
     Ok((tls, session_token))
 }
 
-/// Generate random SOCKS5 auth token (prevents local proxy sniffing — Happ-class vuln)
+/// Generate cryptographically random SOCKS5 auth token
 fn generate_socks_token() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-    format!("{:016x}", seed ^ 0xDEADBEEF_CAFEBABE)
+    let mut bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    hex::encode(bytes)
 }
 
 /// SOCKS5 auth negotiation: require username/password if token is set
@@ -406,10 +406,9 @@ impl quinn::rustls::client::danger::ServerCertVerifier for QuicNV {
 /// Connect to QUIC server and authenticate. Returns the connection on success.
 async fn quic_connect_and_auth(endpoint: &quinn::Endpoint, addr: std::net::SocketAddr, args: &[String]) -> Option<quinn::Connection> {
     dlog(&format!("QUIC connecting to {}", addr));
-    // Use a legitimate Russian domain as SNI (matches Reality pool)
-    // Randomize per connection to avoid fingerprinting
-    let sni_pool = ["ozon.ru", "wildberries.ru", "cdn.jsdelivr.net", "api.vk.com", "lamoda.ru"];
-    let sni = sni_pool[addr.port() as usize % sni_pool.len()];
+    // Randomize SNI per connection from legitimate Russian domains
+    let sni_pool = ["ozon.ru", "wildberries.ru", "cdn.jsdelivr.net", "api.vk.com", "lamoda.ru", "rbc.ru", "ria.ru"];
+    let sni = { use rand::Rng; sni_pool[rand::thread_rng().gen_range(0..sni_pool.len())] };
     let conn = match endpoint.connect(addr, sni) {
         Ok(c) => match tokio::time::timeout(std::time::Duration::from_secs(10), c).await {
             Ok(Ok(c)) => { dlog("QUIC connected"); c }

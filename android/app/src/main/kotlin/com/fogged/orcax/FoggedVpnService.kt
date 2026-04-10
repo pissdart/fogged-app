@@ -89,6 +89,23 @@ class FoggedVpnService : VpnService() {
         val hysteriaBin = "$nativeDir/libhysteria.so"
         val tun2socksBin = "$nativeDir/libtun2socks.so"
 
+        // Verify required binaries exist before starting
+        val requiredBin = when (protocol) {
+            "xray" -> xrayBin
+            "hysteria" -> hysteriaBin
+            else -> orcaxBin
+        }
+        if (!java.io.File(requiredBin).exists()) {
+            Log.e(TAG, "Binary not found: $requiredBin")
+            stopVpn()
+            return
+        }
+        if (!java.io.File(tun2socksBin).exists()) {
+            Log.e(TAG, "tun2socks not found: $tun2socksBin")
+            stopVpn()
+            return
+        }
+
         // Start the right proxy binary based on protocol
         try {
             val cmd: List<String> = when (protocol) {

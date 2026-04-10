@@ -122,7 +122,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiBase = 'https://dl.fogged.net';
-  String _appVersion = '1.5.2'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.5.3'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1868,9 +1868,12 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         final exePath = '${Platform.environment['TEMP']}\\Fogged-Setup.exe';
         await File(exePath).writeAsBytes(bytes);
         setState(() => _status = 'Running installer...');
-        final p = await SharedPreferences.getInstance();
-        await p.setString('update_installed_version', widget.version);
-        Process.run(exePath, ['/S']);
+        final result = await Process.run(exePath, ['/S']);
+        // Only mark as installed if installer succeeded
+        if (result.exitCode == 0) {
+          final p = await SharedPreferences.getInstance();
+          await p.setString('update_installed_version', widget.version);
+        }
         await Future.delayed(const Duration(seconds: 2));
         exit(0);
       } else if (Platform.isAndroid) {
@@ -2209,37 +2212,40 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           ]),
           const SizedBox(height: 16),
 
-          // Check for updates button
-          Center(child: GestureDetector(
-            onTap: () async {
+          // Check for updates / repair button
+          Center(child: SizedBox(width: double.infinity, height: 36, child: ElevatedButton.icon(
+            onPressed: () async {
               try {
+                // Clear all update flags — forces re-check even if previously marked installed
+                final p = await SharedPreferences.getInstance();
+                await p.remove('update_dismissed_at');
+                await p.remove('update_installed_version');
+                await p.remove('update_skipped_version');
+
                 final resp = await http.get(Uri.parse('${widget.apiBase}/version'));
                 if (resp.statusCode == 200) {
                   final j = jsonDecode(resp.body);
                   final latest = j['version'] as String? ?? '';
                   final info = await PackageInfo.fromPlatform();
-                  // Compare: only show update if server version is newer
                   final ap = latest.split('.').map((s) => int.tryParse(s) ?? 0).toList();
                   final bp = info.version.split('.').map((s) => int.tryParse(s) ?? 0).toList();
                   while (ap.length < 3) ap.add(0);
                   while (bp.length < 3) bp.add(0);
                   final isNewer = ap[0] > bp[0] || (ap[0] == bp[0] && ap[1] > bp[1]) || (ap[0] == bp[0] && ap[1] == bp[1] && ap[2] > bp[2]);
                   if (!isNewer || latest.isEmpty) {
-                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('v${info.version} — latest version')));
+                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('v${info.version} — ${L.tr('up_to_date')}')));
                   } else {
-                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('v$latest available — restart app to update')));
-                    // Clear the dismissed/installed flags so the update dialog shows on next launch
-                    final p = await SharedPreferences.getInstance();
-                    await p.remove('update_dismissed_at');
-                    await p.remove('update_installed_version');
+                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('v$latest ${L.tr('available')} — ${L.tr('restart_to_update')}')));
                   }
                 }
               } catch (_) {
-                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not check for updates')));
+                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(L.tr('update_check_failed'))));
               }
             },
-            child: Text('Check for updates', style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.3))),
-          )),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.white.withValues(alpha: 0.06), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+            icon: Icon(Icons.refresh, size: 14, color: Colors.white.withValues(alpha: 0.5)),
+            label: Text(L.tr('check_updates'), style: const TextStyle(fontSize: 12, letterSpacing: 0.5)),
+          ))),
           const SizedBox(height: 16),
 
           Center(child: GestureDetector(
