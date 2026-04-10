@@ -75,7 +75,10 @@ async fn connect_and_auth(sa: &str) -> Result<(TlsStream, [u8; 16])> {
     let cfg = rustls::ClientConfig::builder()
         .dangerous().with_custom_certificate_verifier(Arc::new(NV)).with_no_client_auth();
     let con = tokio_rustls::TlsConnector::from(Arc::new(cfg));
-    let sni = rustls_pki_types::ServerName::try_from("orcax.local")
+    // Reality SNI — use legitimate Russian domain (matches server Reality config)
+    let sni_pool = ["ozon.ru", "wildberries.ru", "cdn.jsdelivr.net", "api.vk.com", "lamoda.ru"];
+    let sni_name = { use rand::Rng; sni_pool[rand::thread_rng().gen_range(0..sni_pool.len())] };
+    let sni = rustls_pki_types::ServerName::try_from(sni_name)
         .map_err(|_| anyhow!("bad SNI"))?.to_owned();
     let mut tls = tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -187,11 +190,34 @@ async fn main() {
     emit("connecting", None);
 
     if protocol == "quic" {
+        // v4 Auto-Transport: QUIC → TCP Reality → CDN WebSocket
+        // Try QUIC first (fastest), fall back automatically if blocked
+        dlog("transport probe: trying QUIC...");
         run_quic_mode(&sa, &sk, &args, &socks_token, &extra_servers).await;
-        // If QUIC failed and we have a CDN URL, try WebSocket fallback
+
+        // QUIC failed → try TCP Reality (looks like HTTPS to ozon.ru)
+        dlog("QUIC unavailable, falling back to TCP Reality...");
+        emit("connecting", Some("TCP stealth"));
+        let tcp_addr = sa.replace(":9446", ":9443").replace(":9444", ":9443");
+        // Re-run ourselves with TCP mode (reuses the full TLS mux path below)
+        let exe = std::env::current_exe().unwrap_or_default();
+        let mut tcp_args_vec = vec![
+            "--server".to_string(), tcp_addr,
+            "--socks".to_string(), sk.clone(),
+            "--uuid".to_string(), arg(&args, "--uuid").unwrap_or_default(),
+            "--protocol".to_string(), "tcp".to_string(),
+        ];
+        if let Some(ref url) = cdn_url { tcp_args_vec.extend(["--cdn-url".to_string(), url.clone()]); }
+        if let Some(ref pk) = arg(&args, "--pubkey") { tcp_args_vec.extend(["--pubkey".to_string(), pk.clone()]); }
+        let tcp_result = tokio::process::Command::new(&exe).args(&tcp_args_vec)
+            .stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit())
+            .status().await;
+        if tcp_result.map(|s| s.success()).unwrap_or(false) { return; }
+
+        // TCP also failed → CDN WebSocket as last resort
         if let Some(ref url) = cdn_url {
-            dlog("QUIC failed, trying CDN WebSocket fallback...");
-            emit("connecting", Some("CDN fallback"));
+            dlog("TCP unavailable, trying CDN WebSocket...");
+            emit("connecting", Some("CDN tunnel"));
             run_ws_cdn_mode(url, &sa, &sk, &args, &socks_token).await;
         }
         return;
@@ -204,17 +230,27 @@ async fn main() {
     let mut links = Vec::new();
     let mut first_token = [0u8; 16];
 
-    for i in 0..1 { // Only 1 control connection now (data goes per-stream)
-        let (tls, token) = match connect_and_auth(&sa).await {
+    // TCP multi-path: try primary server, then extras, then CDN
+    let mut tcp_servers = vec![sa.clone()];
+    if let Some(ref extras) = extra_servers {
+        for s in extras.split(',') {
+            let s = s.trim();
+            if !s.is_empty() { tcp_servers.push(s.to_string()); }
+        }
+    }
+    let mut tcp_connected = false;
+    for (si, server) in tcp_servers.iter().enumerate() {
+        dlog(&format!("TCP trying server {} ({})", si, server));
+        let (tls, token) = match connect_and_auth(server).await {
             Ok(t) => t,
             Err(e) => {
-                if i == 0 { emit("error", Some(&format!("{}", e))); std::process::exit(1); }
-                dlog(&format!("link {} failed: {}", i, e));
-                continue;
+                dlog(&format!("TCP server {} failed: {}", si, e));
+                continue; // Try next server
             }
         };
-        if i == 0 { first_token = token; }
-        dlog(&format!("control link established"));
+        tcp_connected = true;
+        first_token = token;
+        dlog(&format!("TCP connected to {}", server));
 
         let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(256);
         let (mut tls_read, mut tls_write) = tokio::io::split(tls);
@@ -237,7 +273,7 @@ async fn main() {
             let mut hdr = [0u8; 8];
             let mut frame_count = 0u64;
             loop {
-                if tls_read.read_exact(&mut hdr).await.is_err() { dlog(&format!("link {} reader: closed", i)); std::process::exit(1); }
+                if tls_read.read_exact(&mut hdr).await.is_err() { dlog("TCP reader: closed"); std::process::exit(1); }
                 let frame_type = hdr[0];
                 let stream_id = u32::from_be_bytes([hdr[2], hdr[3], hdr[4], hdr[5]]);
                 let length = u16::from_be_bytes([hdr[6], hdr[7]]) as usize;
@@ -270,6 +306,19 @@ async fn main() {
         });
 
         links.push(MuxLink { write_tx });
+        break; // Connected successfully, stop trying other servers
+    }
+
+    // If no TCP server worked, try CDN WebSocket as last resort
+    if !tcp_connected {
+        if let Some(ref url) = cdn_url {
+            dlog("all TCP servers failed, trying CDN WebSocket...");
+            emit("connecting", Some("CDN tunnel"));
+            run_ws_cdn_mode(url, &sa, &sk, &args, &socks_token).await;
+        } else {
+            emit("error", Some("all servers unreachable"));
+        }
+        return;
     }
 
     let l = match TcpListener::bind(&sk).await {

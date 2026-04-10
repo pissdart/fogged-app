@@ -122,7 +122,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiBase = 'https://dl.fogged.net';
-  String _appVersion = '1.5.3'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.5.4'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -605,7 +605,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         final serverAddr = useQuic ? srv.addr : srv.addr.replaceAll(':9444', ':${srv.params['tcp_port'] ?? '9446'}');
         args = ['--server', serverAddr, '--socks', '127.0.0.1:1080', '--uuid', _uuid];
         // Pro Max and OrcaX HY2 both use QUIC transport
-        if (_protocol == 'OrcaX Pro Max' || _protocol == 'OrcaX Hysteria2') { args.addAll(['--protocol', 'quic']); }
+        if (_protocol == 'OrcaX Pro Max' || _protocol == 'OrcaX Hysteria2') {
+          args.addAll(['--protocol', 'quic']);
+          // v4: CDN fallback URL for when QUIC is blocked (Kazakhstan, etc.)
+          args.addAll(['--cdn-url', 'wss://tunnel.fogged.net']);
+        }
       } else if (proto == 'vless') {
         binary = await _findBinary('xray') ?? '';
         if (binary.isEmpty) { _showError('xray binary not found — check installation'); setState(() => _connecting = false); return; }
@@ -2135,9 +2139,9 @@ class _SettingsScreenState extends State<_SettingsScreen> {
               Divider(color: Colors.white.withValues(alpha: 0.06), height: 1),
               SwitchListTile(
                 value: _killSwitch,
-                onChanged: Platform.isMacOS ? (v) => _setKillSwitch(v) : null,
-                title: Text('Kill switch', style: TextStyle(color: Colors.white.withValues(alpha: Platform.isMacOS ? 1.0 : 0.3), fontSize: 13)),
-                subtitle: Text(Platform.isMacOS ? 'Block internet if VPN disconnects' : 'macOS only', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
+                onChanged: null, // Requires Apple Developer (Network Extension) — coming soon
+                title: Text('Kill switch', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 13)),
+                subtitle: Text('Coming soon', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
                 activeColor: Colors.white,
                 inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
               ),
