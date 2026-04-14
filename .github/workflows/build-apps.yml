@@ -53,9 +53,12 @@ jobs:
           7z e /tmp/xray.zip xray.exe -o"$RELEASE_DIR" -y
           # Hysteria2 v2.6.1 — Windows x64
           curl -sfL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.1/hysteria-windows-amd64.exe" -o "$RELEASE_DIR/hysteria.exe"
+          # VK TURN client for whitelist-mode (Reality + HY2 over VK voice-call TURN)
+          cp orcax/bin/vk-turn-client-windows-amd64.exe "$RELEASE_DIR/"
           # Verify downloads
           test -s "$RELEASE_DIR/xray.exe" || { echo "ERROR: xray.exe missing"; exit 1; }
           test -s "$RELEASE_DIR/hysteria.exe" || { echo "ERROR: hysteria.exe missing"; exit 1; }
+          test -s "$RELEASE_DIR/vk-turn-client-windows-amd64.exe" || { echo "ERROR: vk-turn-client missing"; exit 1; }
 
       - name: Build Windows installer
         shell: pwsh

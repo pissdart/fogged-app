@@ -10,8 +10,10 @@
 //!   4. orcax_disconnect(handle)
 
 mod tunnel;
+pub mod whitelist;
 
 pub use tunnel::{OrcaXTunnel, TunnelConfig, TunnelState};
+pub use whitelist::Whitelist;
 
 /// C FFI for Flutter — simple connect/disconnect interface.
 /// The Flutter app calls these via dart:ffi.

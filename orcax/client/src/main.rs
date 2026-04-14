@@ -1,14 +1,53 @@
 mod brutal;
+#[path = "whitelist.rs"]
+mod whitelist;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use anyhow::{anyhow, Result};
 use chacha20poly1305::aead::KeyInit;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
+use whitelist::Whitelist;
+
+/// Global whitelist — set at startup, read by SOCKS5 handlers.
+/// `None` means the feature is disabled (no bypass).
+static WHITELIST: OnceLock<Option<Whitelist>> = OnceLock::new();
+
+fn whitelist() -> Option<&'static Whitelist> {
+    WHITELIST.get().and_then(|o| o.as_ref())
+}
+
+/// Direct bypass: for whitelisted destinations, connect from the client
+/// machine and splice in place of going through the VPN.
+async fn bypass_direct(mut c: TcpStream, host: &str, port: u16) -> Result<()> {
+    let target = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => std::net::SocketAddr::new(ip, port),
+        Err(_) => {
+            // Blocking resolve to avoid pulling a DNS crate
+            let addrs: Vec<_> = tokio::net::lookup_host((host, port)).await?.collect();
+            *addrs.first().ok_or_else(|| anyhow!("dns: no addrs"))?
+        }
+    };
+    let mut direct = tokio::time::timeout(std::time::Duration::from_secs(5),
+        TcpStream::connect(target)).await
+        .map_err(|_| anyhow!("bypass connect timeout"))??;
+    direct.set_nodelay(true).ok();
+    // SOCKS5 success reply
+    c.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+    tokio::io::copy_bidirectional(&mut c, &mut direct).await.ok();
+    Ok(())
+}
 
 type TlsStream = tokio_rustls::client::TlsStream<TcpStream>;
+
+const SNI_POOL: &[&str] = &["ozon.ru", "wildberries.ru", "cdn.jsdelivr.net", "api.vk.com", "lamoda.ru", "rbc.ru", "ria.ru"];
+
+fn pick_sni() -> &'static str {
+    use rand::Rng;
+    SNI_POOL[rand::thread_rng().gen_range(0..SNI_POOL.len())]
+}
 
 fn dlog(msg: &str) {
     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
@@ -76,8 +115,7 @@ async fn connect_and_auth(sa: &str) -> Result<(TlsStream, [u8; 16])> {
         .dangerous().with_custom_certificate_verifier(Arc::new(NV)).with_no_client_auth();
     let con = tokio_rustls::TlsConnector::from(Arc::new(cfg));
     // Reality SNI — use legitimate Russian domain (matches server Reality config)
-    let sni_pool = ["ozon.ru", "wildberries.ru", "cdn.jsdelivr.net", "api.vk.com", "lamoda.ru"];
-    let sni_name = { use rand::Rng; sni_pool[rand::thread_rng().gen_range(0..sni_pool.len())] };
+    let sni_name = pick_sni();
     let sni = rustls_pki_types::ServerName::try_from(sni_name)
         .map_err(|_| anyhow!("bad SNI"))?.to_owned();
     let mut tls = tokio::time::timeout(
@@ -88,7 +126,8 @@ async fn connect_and_auth(sa: &str) -> Result<(TlsStream, [u8; 16])> {
 
     // OrcaX handshake
     let pk = spk();
-    let uuid = parse_uuid(&arg_s(sa, "--uuid").unwrap_or("0804b576-4dfb-424a-80e7-e812e5c13cae".into()));
+    let args: Vec<String> = std::env::args().collect();
+    let uuid = parse_uuid(&arg(&args, "--uuid").unwrap_or("0804b576-4dfb-424a-80e7-e812e5c13cae".into()));
     let (eph, enc) = orcax_transport::handshake::client_encrypt_uuid(&pk, &uuid);
     let mut a = Vec::with_capacity(32 + enc.len());
     a.extend_from_slice(&eph); a.extend_from_slice(&enc);
@@ -164,6 +203,28 @@ async fn main() {
     let cdn_url = arg(&args, "--cdn-url");
     let extra_servers = arg(&args, "--extra-servers"); // comma-separated backup servers for multi-path
 
+    // Whitelist mode: bypass VPN for Russian sites (banks, gov, VK, Yandex).
+    // --whitelist enables the default list; --whitelist-extra adds user domains.
+    let whitelist_enabled = args.iter().any(|a| a == "--whitelist");
+    let whitelist_extra = arg(&args, "--whitelist-extra");
+    let wl = if whitelist_enabled {
+        Some(Whitelist::new(whitelist_extra.as_deref()))
+    } else {
+        None
+    };
+    let _ = WHITELIST.set(wl);
+    if whitelist_enabled {
+        dlog("whitelist mode ON — Russian sites will bypass the VPN");
+    }
+
+    // Shim mode: run as SOCKS5 front-end for xray/hysteria.
+    // Whitelisted traffic bypasses; everything else forwards to upstream SOCKS5.
+    if let Some(upstream) = arg(&args, "--upstream-socks") {
+        let listen = sk.clone();
+        run_shim_mode(&listen, &upstream).await;
+        return;
+    }
+
     // Port hopping: if --ports is provided, pick a random port from the list
     if let Some(ports_str) = arg(&args, "--ports") {
         let ports: Vec<u16> = ports_str.split(',').filter_map(|p| p.trim().parse().ok()).collect();
@@ -180,11 +241,13 @@ async fn main() {
 
     // Kill any previous instance hogging the SOCKS port
     if let Some(port_str) = sk.rsplit(':').next() {
-        let _ = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("lsof -ti :{} | xargs kill -9 2>/dev/null", port_str))
-            .output();
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Ok(port) = port_str.parse::<u16>() {
+            let _ = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("lsof -ti :{} | xargs kill -9 2>/dev/null", port))
+                .output();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 
     emit("connecting", None);
@@ -252,7 +315,7 @@ async fn main() {
             let mut hdr = [0u8; 8];
             let mut frame_count = 0u64;
             loop {
-                if tls_read.read_exact(&mut hdr).await.is_err() { dlog("TCP reader: closed"); std::process::exit(1); }
+                if tls_read.read_exact(&mut hdr).await.is_err() { dlog("TCP reader: closed"); break; }
                 let frame_type = hdr[0];
                 let stream_id = u32::from_be_bytes([hdr[2], hdr[3], hdr[4], hdr[5]]);
                 let length = u16::from_be_bytes([hdr[6], hdr[7]]) as usize;
@@ -355,6 +418,14 @@ async fn handle_socks5(mut c: TcpStream, mux: &MuxPool, bu: &Arc<AtomicU64>, tok
         _ => return Err(anyhow!("unsupported")),
     };
 
+    // Whitelist bypass: connect directly for Russian sites, skip the VPN tunnel
+    if let Some(wl) = whitelist() {
+        if wl.matches(&host) {
+            dlog(&format!("bypass → {}:{}", host, port));
+            return bypass_direct(c, &host, port).await;
+        }
+    }
+
     let t = orcax_protocol::address::TargetAddr {
         addr: if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() { orcax_protocol::address::Address::IPv4(ip) }
         else { orcax_protocol::address::Address::Domain(host) }, port,
@@ -402,10 +473,6 @@ impl rustls::client::danger::ServerCertVerifier for NV {
 }
 
 fn arg(a: &[String], f: &str) -> Option<String> { a.iter().position(|x| x == f).and_then(|i| a.get(i + 1).cloned()) }
-fn arg_s(_sa: &str, _f: &str) -> Option<String> {
-    let args: Vec<String> = std::env::args().collect();
-    arg(&args, _f)
-}
 fn parse_uuid(s: &str) -> [u8; 16] {
     let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     let mut out = [0u8; 16];
@@ -435,8 +502,7 @@ impl quinn::rustls::client::danger::ServerCertVerifier for QuicNV {
 async fn quic_connect_and_auth(endpoint: &quinn::Endpoint, addr: std::net::SocketAddr, args: &[String]) -> Option<quinn::Connection> {
     dlog(&format!("QUIC connecting to {}", addr));
     // Randomize SNI per connection from legitimate Russian domains
-    let sni_pool = ["ozon.ru", "wildberries.ru", "cdn.jsdelivr.net", "api.vk.com", "lamoda.ru", "rbc.ru", "ria.ru"];
-    let sni = { use rand::Rng; sni_pool[rand::thread_rng().gen_range(0..sni_pool.len())] };
+    let sni = pick_sni();
     let conn = match endpoint.connect(addr, sni) {
         Ok(c) => match tokio::time::timeout(std::time::Duration::from_secs(10), c).await {
             Ok(Ok(c)) => { dlog("QUIC connected"); c }
@@ -652,6 +718,14 @@ async fn quic_socks5(mut c: TcpStream, conn: &quinn::Connection, token: &str) ->
         _ => return Err(anyhow!("unsupported")),
     };
 
+    // Whitelist bypass for Russian sites
+    if let Some(wl) = whitelist() {
+        if wl.matches(&host) {
+            dlog(&format!("bypass → {}:{}", host, port));
+            return bypass_direct(c, &host, port).await;
+        }
+    }
+
     let (mut send, mut recv) = conn.open_bi().await.map_err(|e| anyhow!("{}", e))?;
 
     // Target address
@@ -668,6 +742,76 @@ async fn quic_socks5(mut c: TcpStream, conn: &quinn::Connection, token: &str) ->
     let up = tokio::spawn(async move { let _ = tokio::io::copy(&mut cr, &mut send).await; send.finish().ok(); });
     let dn = tokio::spawn(async move { let _ = tokio::io::copy(&mut recv, &mut cw).await; });
     tokio::select! { _ = up => {}, _ = dn => {} }
+    Ok(())
+}
+
+// ── Whitelist Shim Mode ──
+// Front-end SOCKS5 proxy for xray/hysteria. We listen on :1080, check the
+// whitelist, and either:
+//   - connect directly (whitelisted Russian site → bypass VPN), or
+//   - forward the raw SOCKS5 conversation to upstream SOCKS5 (xray/hy2 on :1081).
+// No auth: the app trusts localhost.
+async fn run_shim_mode(listen: &str, upstream: &str) {
+    let l = match TcpListener::bind(listen).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("shim: bind {} failed: {}", listen, e);
+            emit("error", Some(&format!("shim bind: {}", e)));
+            std::process::exit(1);
+        }
+    };
+    emit("connected", Some(listen));
+    dlog(&format!("shim listening on {} → upstream {}", listen, upstream));
+    let upstream = Arc::new(upstream.to_string());
+    loop {
+        let (c, _) = match l.accept().await { Ok(v) => v, Err(_) => continue };
+        let up = upstream.clone();
+        tokio::spawn(async move {
+            let _ = shim_handle(c, &up).await;
+        });
+    }
+}
+
+async fn shim_handle(mut c: TcpStream, upstream: &str) -> Result<()> {
+    c.set_nodelay(true)?;
+    // SOCKS5 greeting: read methods, reply no-auth
+    let mut greet = [0u8; 258];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(5), c.read(&mut greet))
+        .await.map_err(|_| anyhow!("shim greet timeout"))??;
+    if n < 2 || greet[0] != 5 { return Err(anyhow!("not socks5")); }
+    c.write_all(&[5, 0]).await?;
+
+    // Read CONNECT request — but DON'T consume it yet, we may need to forward it verbatim
+    let mut req = [0u8; 263];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(5), c.read(&mut req))
+        .await.map_err(|_| anyhow!("shim req timeout"))??;
+    if n < 7 || req[0] != 5 || req[1] != 1 { return Err(anyhow!("bad socks5 req")); }
+
+    let (host, port) = match req[3] {
+        1 => (format!("{}.{}.{}.{}", req[4], req[5], req[6], req[7]), u16::from_be_bytes([req[8], req[9]])),
+        3 => { let l = req[4] as usize; (String::from_utf8(req[5..5+l].to_vec())?, u16::from_be_bytes([req[5+l], req[6+l]])) }
+        _ => return Err(anyhow!("shim: unsupported addr type")),
+    };
+
+    // Whitelisted → bypass VPN
+    if let Some(wl) = whitelist() {
+        if wl.matches(&host) {
+            dlog(&format!("shim bypass → {}:{}", host, port));
+            return bypass_direct(c, &host, port).await;
+        }
+    }
+
+    // Forward to upstream: do a fresh SOCKS5 handshake, then replay the CONNECT.
+    let mut up = TcpStream::connect(upstream).await?;
+    up.set_nodelay(true).ok();
+    up.write_all(&[5, 1, 0]).await?; // greet: 1 method, no-auth
+    let mut gr = [0u8; 2];
+    up.read_exact(&mut gr).await?;
+    if gr[0] != 5 || gr[1] != 0 { return Err(anyhow!("upstream no no-auth")); }
+    up.write_all(&req[..n]).await?; // replay CONNECT verbatim
+
+    // Splice both sides: upstream's CONNECT reply flows to client; client data flows to upstream.
+    tokio::io::copy_bidirectional(&mut c, &mut up).await.ok();
     Ok(())
 }
 
@@ -831,6 +975,14 @@ async fn cdn_socks5(
         3 => { let l = r[4] as usize; (String::from_utf8(r[5..5+l].to_vec())?, u16::from_be_bytes([r[5+l], r[6+l]])) }
         _ => return Err(anyhow!("unsupported")),
     };
+
+    // Whitelist bypass for Russian sites
+    if let Some(wl) = whitelist() {
+        if wl.matches(&host) {
+            dlog(&format!("bypass → {}:{}", host, port));
+            return bypass_direct(c, &host, port).await;
+        }
+    }
 
     let sid = next_id.fetch_add(2, Ordering::Relaxed);
 

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
@@ -47,6 +48,30 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   String _uuid = '';
   String _telegramHandle = '';
   static const _secureStorage = FlutterSecureStorage();
+  // Fallback to SharedPreferences when keychain fails (unsigned macOS builds,
+  // missing entitlements, etc.). UUID/telegram handle/vk link aren't highly
+  // sensitive — they get transmitted in every sub URL fetch anyway.
+  Future<String?> _secRead(String key) async {
+    try {
+      final v = await _secureStorage.read(key: key);
+      if (v != null) return v;
+    } catch (_) { /* fall through to prefs */ }
+    final p = await SharedPreferences.getInstance();
+    return p.getString('sec_$key');
+  }
+  Future<void> _secWrite(String key, String value) async {
+    try {
+      await _secureStorage.write(key: key, value: value);
+      return;
+    } catch (_) { /* fall through to prefs */ }
+    final p = await SharedPreferences.getInstance();
+    await p.setString('sec_$key', value);
+  }
+  Future<void> _secDelete(String key) async {
+    try { await _secureStorage.delete(key: key); } catch (_) {}
+    final p = await SharedPreferences.getInstance();
+    await p.remove('sec_$key');
+  }
   bool _authLoading = false;
   bool _codeRequested = false;
   int _codeTimer = 0; // seconds remaining
@@ -72,9 +97,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   String _uptime = '--';
   String _downloaded = '0 B';
   Process? _proxyProcess;
+  Process? _shimProcess; // whitelist shim (orcax-connect --upstream-socks) for xray/hy2
+  Process? _blackoutProcess; // vk-turn-client subprocess (VK TURN fallback)
   Process? _tun2socksProcess;
-  String? _originalDefaultGateway;
-  String? _originalDns;
   late AnimationController _pulseController;
 
   // Platform channel for tray/menu bar
@@ -111,6 +136,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   // Whitelist mode (Russian whitelisted domains bypass VPN)
   bool _whitelistMode = false;
 
+  // Blackout Mode: tunnel traffic through VK voice-call TURN server when
+  // Russia shuts everything off except VK/Yandex (e.g. drone attacks).
+  bool _blackoutMode = false;
+  String _vkCallLink = '';
+  bool _awaitingCaptcha = false;
+
   // Account info (from /account/{uuid})
   String _accountNumber = '';
   String _subStatus = '';
@@ -131,7 +162,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   int _apiEndpointIndex = 0;
   bool _usingFallbackApi = false;
   bool _usingCachedServers = false;
-  String _appVersion = '1.5.5'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.5.6'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -196,14 +227,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Future<void> _loadAuth() async {
     final prefs = await SharedPreferences.getInstance();
     // Read UUID from secure storage (migrate from SharedPreferences if needed)
-    var uuid = await _secureStorage.read(key: 'uuid') ?? '';
-    final handle = await _secureStorage.read(key: 'telegram_handle') ?? '';
+    var uuid = await _secRead('uuid') ?? '';
+    final handle = await _secRead('telegram_handle') ?? '';
     // Migration: if UUID in SharedPreferences but not in secure storage, migrate
     if (uuid.isEmpty) {
       uuid = prefs.getString('uuid') ?? '';
       if (uuid.isNotEmpty) {
-        await _secureStorage.write(key: 'uuid', value: uuid);
-        await _secureStorage.write(key: 'telegram_handle', value: prefs.getString('telegram_handle') ?? '');
+        await _secWrite('uuid', uuid);
+        await _secWrite('telegram_handle', prefs.getString('telegram_handle') ?? '');
         await prefs.remove('uuid'); // clean up plain storage
         await prefs.remove('telegram_handle');
       }
@@ -217,6 +248,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     L.setLang(['ru', 'zh'].contains(lang) ? lang : 'en');
     _whitelistMode = prefs.getBool('whitelist_mode') ?? false;
     _splitDomains = prefs.getStringList('split_domains') ?? [];
+    _blackoutMode = prefs.getBool('blackout_mode') ?? false;
+    _vkCallLink = await _secRead('vk_call_link') ?? '';
     // Restore last used protocol/server/mode
     final savedProtocol = prefs.getString('last_protocol');
     final savedServer = prefs.getString('last_server');
@@ -266,6 +299,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           _totalReferrals = (j['total_referrals'] ?? 0).toInt();
           _userRole = j['role'] ?? 'user';
         });
+        // Cache server-provisioned VK blackout link (used only when user
+        // toggles Blackout Mode — user never sees this value)
+        final link = j['blackout_link'] as String?;
+        if (link != null && link.isNotEmpty) {
+          _vkCallLink = link;
+          await _secWrite('vk_call_link', link);
+        }
         // Load cloud-synced app settings if present
         final settings = j['app_settings'];
         if (settings is Map) {
@@ -378,6 +418,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Future<void> _requestCode() async {
     final handle = _handleCtl.text.trim().replaceAll('@', '');
     if (handle.isEmpty) return;
+    // Numeric-only User ID. Username sign-in is no longer supported because
+    // it required Telegram to expose @handles, which not everyone has set.
+    if (!RegExp(r'^\d+$').hasMatch(handle)) {
+      _showError('Enter your numeric Telegram User ID (open @foggedvpnbot → Settings to find it).');
+      return;
+    }
     setState(() => _authLoading = true);
     try {
       final resp = await http.post(Uri.parse('$_apiBase/auth/request'),
@@ -411,8 +457,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         body: jsonEncode({'telegram_handle': _telegramHandle, 'code': code})).timeout(const Duration(seconds: 10));
       final j = jsonDecode(resp.body);
       if (j['ok'] == true && j['uuid'] != null) {
-        await _secureStorage.write(key: 'uuid', value: j['uuid']);
-        await _secureStorage.write(key: 'telegram_handle', value: _telegramHandle);
+        await _secWrite('uuid', j['uuid']);
+        await _secWrite('telegram_handle', _telegramHandle);
         _uuid = j['uuid'];
         await _fetchSubscription();
         setState(() { _loggedIn = true; });
@@ -425,8 +471,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   Future<void> _logout() async {
     await _disconnect();
-    await _secureStorage.delete(key: 'uuid');
-    await _secureStorage.delete(key: 'telegram_handle');
+    await _secDelete('uuid');
+    await _secDelete('telegram_handle');
     setState(() { _loggedIn = false; _uuid = ''; _servers = []; _codeRequested = false; });
   }
 
@@ -434,8 +480,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   String _mode = 'russia'; // russia, china, direct
   static const _modes = ['russia', 'china', 'direct'];
-  // ignore: unused_field
-  static const _modeLabels = {'russia': 'Russia', 'china': 'China', 'direct': 'Global'};
 
   Future<void> _fetchSubscription() async {
     if (_uuid.isEmpty) return;
@@ -642,23 +686,30 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     } else {
       _proxyProcess?.kill();
       _proxyProcess = null;
+      _shimProcess?.kill();
+      _shimProcess = null;
+      _blackoutProcess?.kill();
+      _blackoutProcess = null;
       // Kill any leftover SOCKS proxy processes on port 1080
       try {
         if (Platform.isMacOS || Platform.isLinux) {
-          final lsof = await Process.run('lsof', ['-ti', ':1080']);
-          if (lsof.exitCode == 0) {
-            for (final pid in lsof.stdout.toString().trim().split('\n').where((s) => s.isNotEmpty)) {
-              await Process.run('kill', ['-9', pid]);
+          for (final port in ['1080', '1081']) {
+            final lsof = await Process.run('lsof', ['-ti', ':$port']);
+            if (lsof.exitCode == 0) {
+              for (final pid in lsof.stdout.toString().trim().split('\n').where((s) => s.isNotEmpty)) {
+                await Process.run('kill', ['-9', pid]);
+              }
             }
           }
         } else if (Platform.isWindows) {
-          // Windows: use netstat + taskkill
-          final netstat = await Process.run('cmd', ['/c', 'netstat -ano | findstr :1080 | findstr LISTENING']);
-          if (netstat.exitCode == 0) {
-            for (final line in netstat.stdout.toString().trim().split('\n').where((s) => s.isNotEmpty)) {
-              final pid = line.trim().split(RegExp(r'\s+')).last;
-              if (pid.isNotEmpty && int.tryParse(pid) != null) {
-                await Process.run('taskkill', ['/F', '/PID', pid]);
+          for (final port in ['1080', '1081']) {
+            final netstat = await Process.run('cmd', ['/c', 'netstat -ano | findstr :$port | findstr LISTENING']);
+            if (netstat.exitCode == 0) {
+              for (final line in netstat.stdout.toString().trim().split('\n').where((s) => s.isNotEmpty)) {
+                final pid = line.trim().split(RegExp(r'\s+')).last;
+                if (pid.isNotEmpty && int.tryParse(pid) != null) {
+                  await Process.run('taskkill', ['/F', '/PID', pid]);
+                }
               }
             }
           }
@@ -686,7 +737,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         return;
       }
       final srv = _filteredServers.firstWhere((s) => s.name == _server, orElse: () => _filteredServers.first);
-      final proto = srv.protocol;
+      var proto = srv.protocol;
 
       // Android: use native VpnService instead of Process.run
       if (Platform.isAndroid) {
@@ -723,6 +774,114 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       String binary;
       List<String> args;
 
+      final whitelistActive = _whitelistMode || _splitDomains.isNotEmpty;
+
+      // VK TURN chaining: if the selected server has transport=vkturn, spawn
+      // vk-turn-client to tunnel traffic through VK voice-call infrastructure.
+      // The server's real IP is at `srv.addr` but users actually talk to
+      // vk-turn-client locally on 127.0.0.1:9002. Required during Russian
+      // blackouts when only VK-whitelisted services are reachable.
+      final isVkTurn = srv.params['transport'] == 'vkturn';
+      if (isVkTurn) {
+        if (Platform.isAndroid) {
+          _showError('Whitelist server not yet supported on Android');
+          setState(() => _connecting = false);
+          return;
+        }
+        if (_vkCallLink.isEmpty) {
+          _showError('Whitelist is being set up. Try again in a few minutes, or pick another server.');
+          setState(() => _connecting = false);
+          return;
+        }
+        final vkBin = await _findVkTurnClient();
+        if (vkBin == null) {
+          _showError('vk-turn-client binary missing from app bundle');
+          setState(() => _connecting = false);
+          return;
+        }
+        // VLESS server → vk-turn-client VLESS mode (TCP).
+        // HY2 server → vk-turn-client UDP mode.
+        final peer = srv.addr; // e.g. 37.27.220.149:56000 (VLESS) or 37.27.220.149:56001 (HY2)
+        final vkArgs = <String>[
+          '-listen', '127.0.0.1:9002',
+          '-peer', peer,
+          '-vk-link', _vkCallLink,
+          '-n', '3',
+        ];
+        if (proto == 'vless') vkArgs.add('-vless');
+        // Kill any previous vk-turn-client process before spawning a new one.
+        // Otherwise the new process panics with `bind: address already in use`
+        // on 127.0.0.1:9002 — which our ready-detection then mis-fired on
+        // because the substring "ready" matched "alREADY in use".
+        if (_blackoutProcess != null) {
+          _blackoutProcess!.kill();
+          _blackoutProcess = null;
+          await Future.delayed(const Duration(milliseconds: 250));
+        }
+        _addLog('Whitelist: launching vk-turn-client → VK TURN → $peer');
+        _blackoutProcess = await Process.start(vkBin, vkArgs);
+
+        // Wait for readiness signal. vk-turn-client uses Go's stdlib `log` which
+        // writes EVERYTHING (including "VLESS mode: listening") to STDERR, not
+        // stdout. So we watch both streams. We MATCH ONLY ON the actual ready
+        // strings emitted by vk-turn-client; do NOT use a generic "ready"
+        // substring because it false-matches things like "address already in
+        // use".
+        final ready = Completer<bool>();
+        var hadFatalError = false;
+        void scan(String l, String prefix) {
+          if (!mounted) return;
+          _addLog('$prefix$l');
+          final lower = l.toLowerCase();
+          // Specific ready strings from vk-turn-proxy/client/main.go:
+          //   "VLESS mode: listening on 127.0.0.1:..."
+          //   "UDP mode: listening on 127.0.0.1:..."
+          //   "UDP mode: forwarding ..."
+          if (!ready.isCompleted && (
+              lower.contains('vless mode: listening on') ||
+              lower.contains('udp mode: listening on') ||
+              lower.contains('mode: forwarding'))) {
+            ready.complete(true);
+          }
+          // Detect fatal panic — fail fast instead of waiting 90s timeout.
+          if (!ready.isCompleted && (
+              lower.startsWith('panic:') ||
+              lower.contains('address already in use') ||
+              lower.contains('fatal error:'))) {
+            hadFatalError = true;
+            if (!ready.isCompleted) ready.complete(false);
+          }
+          if (lower.contains('action required: manual captcha')) {
+            setState(() => _awaitingCaptcha = true);
+          }
+          if (lower.contains('captcha') && lower.contains('success')) {
+            setState(() => _awaitingCaptcha = false);
+          }
+        }
+        _blackoutProcess!.stdout.transform(utf8.decoder).transform(const LineSplitter())
+            .listen((l) => scan(l, 'vk-turn: '));
+        _blackoutProcess!.stderr.transform(utf8.decoder).transform(const LineSplitter())
+            .listen((l) => scan(l, 'vk-turn err: '));
+        try {
+          final ok = await ready.future.timeout(const Duration(seconds: 90));
+          if (!ok || hadFatalError) {
+            _blackoutProcess?.kill();
+            _blackoutProcess = null;
+            _showError('Whitelist tunnel failed to start (vk-turn-client crashed). Check log.');
+            setState(() => _connecting = false);
+            return;
+          }
+          _addLog('Whitelist tunnel ready');
+        } on TimeoutException {
+          _addLog('Whitelist tunnel failed to come up within 90s');
+          _blackoutProcess?.kill();
+          _blackoutProcess = null;
+          _showError('Whitelist tunnel timed out — pick another server or retry later.');
+          setState(() => _connecting = false);
+          return;
+        }
+      }
+
       if (proto == 'orcax') {
         binary = await _findBinary('orcax-connect') ?? '';
         if (binary.isEmpty) { _showError('orcax-connect not found'); setState(() => _connecting = false); return; }
@@ -731,23 +890,32 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         final useQuic = _protocol == 'OrcaX Pro Max' || _protocol == 'OrcaX Hysteria2';
         final serverAddr = useQuic ? srv.addr : srv.addr.replaceAll(':9444', ':${srv.params['tcp_port'] ?? '9446'}');
         args = ['--server', serverAddr, '--socks', '127.0.0.1:1080', '--uuid', _uuid];
-        // Pro Max and OrcaX HY2 both use QUIC transport
         if (_protocol == 'OrcaX Pro Max' || _protocol == 'OrcaX Hysteria2') {
           args.addAll(['--protocol', 'quic']);
           // v4: CDN fallback URL for when QUIC is blocked (Kazakhstan, etc.)
           args.addAll(['--cdn-url', 'wss://tunnel.fogged.net']);
         }
+        // Whitelist (split tunnel) — handled inline in orcax-connect
+        if (_whitelistMode) args.add('--whitelist');
+        if (_splitDomains.isNotEmpty) args.addAll(['--whitelist-extra', _splitDomains.join(',')]);
       } else if (proto == 'vless') {
         binary = await _findBinary('xray') ?? '';
         if (binary.isEmpty) { _showError('xray binary not found — check installation'); setState(() => _connecting = false); return; }
-        final config = _generateXrayConfig(srv, _uuid);
+        // For vkturn servers, xray connects to local vk-turn-client instead of the real IP.
+        final effectiveSrv = isVkTurn
+            ? VpnServer(srv.protocol, srv.name, '127.0.0.1:9002', srv.params)
+            : srv;
+        final config = _generateXrayConfig(effectiveSrv, _uuid);
         final configPath = _tempPath('vless.json');
         await File(configPath).writeAsString(config);
         args = ['run', '-config', configPath];
       } else if (proto == 'hysteria2') {
         binary = await _findBinary('hysteria') ?? '';
         if (binary.isEmpty) { _showError('hysteria binary not found — check installation'); setState(() => _connecting = false); return; }
-        final config = _generateHy2Config(srv, _uuid);
+        final effectiveSrv = isVkTurn
+            ? VpnServer(srv.protocol, srv.name, '127.0.0.1:9002', srv.params)
+            : srv;
+        final config = _generateHy2Config(effectiveSrv, _uuid);
         final configPath = _tempPath('hy2.yaml');
         await File(configPath).writeAsString(config);
         args = ['client', '-c', configPath];
@@ -755,33 +923,52 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         _showError('Unknown protocol: $proto'); setState(() => _connecting = false); return;
       }
 
+      // For xray/hy2 with whitelist on: spawn orcax-connect as a SOCKS5 front-end.
+      // xray/hy2 listen on 1081, shim on 1080 does whitelist routing.
+      if (whitelistActive && proto != 'orcax') {
+        final shimBin = await _findBinary('orcax-connect') ?? '';
+        if (shimBin.isEmpty) {
+          _addLog('WARN: orcax-connect not found — whitelist will not work');
+        } else {
+          final shimArgs = <String>[
+            '--socks', '127.0.0.1:1080',
+            '--upstream-socks', '127.0.0.1:1081',
+          ];
+          if (_whitelistMode) shimArgs.add('--whitelist');
+          if (_splitDomains.isNotEmpty) shimArgs.addAll(['--whitelist-extra', _splitDomains.join(',')]);
+          _addLog('launching whitelist shim (127.0.0.1:1080 → 1081)');
+          _shimProcess = await Process.start(shimBin, shimArgs);
+          _shimProcess!.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((l) {
+            if (mounted) _addLog('shim: $l');
+          });
+        }
+      }
+
       _connectedServerIp = srv.addr.split(':').first;
       _addLog('launching $proto → ${srv.name} (${srv.addr})');
       _proxyProcess = await Process.start(binary, args);
 
       _proxyProcess!.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((line) async {
-        // OrcaX emits JSON, Xray/Hysteria emit plain text
+        if (!mounted) return;
         if (proto == 'orcax') {
           _handleOrcaxOutput(line);
         } else {
           _addLog(line);
-          // Xray/Hysteria: SOCKS5 is ready after a brief startup
           if (!_connected && (line.contains('started') || line.contains('listening') || line.contains('TCP'))) {
             await Future.delayed(const Duration(milliseconds: 500));
+            if (!mounted) return;
             await _enableVpnRouting(_connectedServerIp ?? '');
-            setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
-            _startUptimeTimer();
+            _onConnected();
           }
         }
       });
 
       _proxyProcess!.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
+        if (!mounted) return;
         _addLog(line);
-        // Xray/Hysteria log to stderr
         if (!_connected && (line.contains('started') || line.contains('listening') || line.contains('TCP') || line.contains('connected'))) {
           _enableVpnRouting(_connectedServerIp ?? '');
-          setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
-          _startUptimeTimer();
+          _onConnected();
         }
       });
 
@@ -790,8 +977,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         Future.delayed(const Duration(seconds: 2), () async {
           if (_connecting && mounted) {
             await _enableVpnRouting(_connectedServerIp ?? '');
-            setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
-            _startUptimeTimer();
+            _onConnected();
           }
         });
       }
@@ -811,14 +997,21 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     } catch (e) { setState(() => _connecting = false); _showError('$e'); }
   }
 
+  void _onConnected() {
+    if (!mounted) return;
+    setState(() { _connected = true; _connecting = false; _uptime = '0:00'; });
+    _trayChannel.invokeMethod('setConnected', true);
+    SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
+    _startUptimeTimer();
+  }
+
   void _handleOrcaxOutput(String line) {
     try {
       final json = jsonDecode(line) as Map<String, dynamic>;
       final status = json['status'] as String?;
       if (status == 'connected') {
         _enableVpnRouting(_connectedServerIp ?? '');
-        setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
-        _startUptimeTimer();
+        _onConnected();
       } else if (status == 'log') {
         _addLog(json['msg'] as String? ?? '');
       } else if (status == 'error') {
@@ -832,7 +1025,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   void _addLog(String msg) {
-    if (msg.trim().isEmpty) return;
+    if (msg.trim().isEmpty || !mounted) return;
     setState(() {
       _debugLogs.add(msg);
       if (_debugLogs.length > 300) _debugLogs.removeAt(0);
@@ -843,6 +1036,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   // ── Config generators ──
+
+  /// Listen port for xray/hy2. When whitelist mode is on, they listen on 1081
+  /// and the orcax-connect shim on 1080 forwards non-whitelisted traffic here.
+  int get _upstreamSocksPort => (_whitelistMode || _splitDomains.isNotEmpty) ? 1081 : 1080;
 
   String _generateXrayConfig(VpnServer srv, String uuid) {
     final parts = srv.addr.split(':');
@@ -855,7 +1052,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     final fp = srv.params['fp'] ?? 'random';
     return jsonEncode({
       "log": {"loglevel": "warning"},
-      "inbounds": [{"tag": "socks", "protocol": "socks", "listen": "127.0.0.1", "port": 1080,
+      "inbounds": [{"tag": "socks", "protocol": "socks", "listen": "127.0.0.1", "port": _upstreamSocksPort,
         "settings": {"auth": "noauth", "udp": true}}],
       "outbounds": [{"tag": "proxy", "protocol": "vless", "settings": {
         "vnext": [{"address": ip, "port": int.tryParse(port) ?? 8443,
@@ -880,7 +1077,7 @@ obfs:
   salamander:
     password: $obfs
 socks5:
-  listen: 127.0.0.1:1080
+  listen: 127.0.0.1:$_upstreamSocksPort
 tls:
   insecure: true
 ''';
@@ -931,23 +1128,32 @@ tls:
     return null;
   }
 
-  // ── System proxy ──
+  /// Find the platform-specific vk-turn-client binary.
+  /// We ship 5 variants: darwin-arm64, darwin-amd64, linux-amd64,
+  /// windows-amd64.exe, android-arm64.
+  Future<String?> _findVkTurnClient() async {
+    String name;
+    if (Platform.isMacOS) {
+      name = _isArm64() ? 'vk-turn-client-darwin-arm64' : 'vk-turn-client-darwin-amd64';
+    } else if (Platform.isWindows) {
+      name = 'vk-turn-client-windows-amd64.exe';
+    } else if (Platform.isAndroid) {
+      name = 'vk-turn-client-android-arm64';
+    } else {
+      name = 'vk-turn-client-linux-amd64';
+    }
+    return _findBinary(name);
+  }
 
-  /// Russian government whitelisted domains — bypass VPN when whitelist mode enabled
-  static const _whitelistedDomains = [
-    'vk.com', 'vk.me', 'vkontakte.ru', 'vk.cc',
-    'ok.ru', 'odnoklassniki.ru',
-    'mail.ru', 'list.ru', 'inbox.ru', 'bk.ru',
-    'yandex.ru', 'yandex.com', 'ya.ru',
-    'sberbank.ru', 'online.sberbank.ru', 'sber.ru',
-    'tinkoff.ru', 'alfabank.ru', 'vtb.ru',
-    'gosuslugi.ru', 'mos.ru', 'gov.ru', 'kremlin.ru',
-    'ria.ru', 'tass.ru', 'rt.com',
-    'wildberries.ru', 'ozon.ru', 'avito.ru',
-    'rutube.ru', 'dzen.ru',
-    'megafon.ru', 'mts.ru', 'beeline.ru', 'tele2.ru',
-    'gazprom.ru', 'rosneft.ru',
-  ];
+  bool _isArm64() {
+    final r = Process.runSync('uname', ['-m']);
+    return r.stdout.toString().trim() == 'arm64';
+  }
+
+  // ── System proxy ──
+  // Whitelist/split-tunneling lives in orcax-connect (Rust). The app just
+  // tells the OS that SOCKS5 is at 127.0.0.1:1080; orcax-connect decides
+  // per-connection whether to tunnel or bypass.
 
   String? _connectedServerIp; // for TUN route management
 
@@ -960,29 +1166,20 @@ tls:
   }
 
   Future<void> _setSystemProxy(bool enable) async {
+    // Whitelist/split-tunneling is handled inside orcax-connect (SOCKS5 proxy).
+    // All platforms just toggle the system SOCKS5 setting to 127.0.0.1:1080.
     try {
       if (Platform.isMacOS) {
-        // Fallback SOCKS proxy mode (when TUN is not available)
         final r = await Process.run('networksetup', ['-listallnetworkservices']);
         final svcs = (r.stdout as String).split('\n').where((s) => s.contains('Wi-Fi') || s.contains('Ethernet')).toList();
         for (final svc in svcs) {
           final name = svc.trim();
           if (enable) {
-            if (_whitelistMode || _splitDomains.isNotEmpty) {
-              final pac = _generatePacFile();
-              final pacPath = _tempPath('proxy.pac');
-              await File(pacPath).writeAsString(pac);
-              await Process.run('networksetup', ['-setautoproxyurl', name, 'file:///$pacPath']);
-              await Process.run('networksetup', ['-setautoproxystate', name, 'on']);
-              await Process.run('networksetup', ['-setsocksfirewallproxystate', name, 'off']);
-            } else {
-              await Process.run('networksetup', ['-setautoproxystate', name, 'off']);
-              await Process.run('networksetup', ['-setsocksfirewallproxy', name, '127.0.0.1', '1080']);
-              await Process.run('networksetup', ['-setsocksfirewallproxystate', name, 'on']);
-            }
+            await Process.run('networksetup', ['-setautoproxystate', name, 'off']);
+            await Process.run('networksetup', ['-setsocksfirewallproxy', name, '127.0.0.1', '1080']);
+            await Process.run('networksetup', ['-setsocksfirewallproxystate', name, 'on']);
           } else {
             await Process.run('networksetup', ['-setsocksfirewallproxystate', name, 'off']);
-            await Process.run('networksetup', ['-setautoproxystate', name, 'off']);
           }
         }
       } else if (Platform.isWindows) {
@@ -993,25 +1190,11 @@ tls:
         }
         const regPath = r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings';
         if (enable) {
-          if (_whitelistMode || _splitDomains.isNotEmpty) {
-            final pac = _generatePacFile();
-            final pacPath = '${Platform.environment['TEMP']}\\fogged-proxy.pac';
-            await File(pacPath).writeAsString(pac);
-            if (!await regRun(['add', regPath, '/v', 'AutoConfigURL', '/t', 'REG_SZ', '/d', 'file:///$pacPath', '/f'])) {
-              _addLog('failed to set PAC proxy, rolling back');
-              await regRun(['add', regPath, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f']);
-            }
-            await regRun(['add', regPath, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f']);
-          } else {
-            await regRun(['add', regPath, '/v', 'ProxyServer', '/t', 'REG_SZ', '/d', 'socks=127.0.0.1:1080', '/f']);
-            if (!await regRun(['add', regPath, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '1', '/f'])) {
-              _addLog('failed to enable proxy, rolling back');
-              await regRun(['add', regPath, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f']);
-            }
-          }
+          await regRun(['delete', regPath, '/v', 'AutoConfigURL', '/f']);
+          await regRun(['add', regPath, '/v', 'ProxyServer', '/t', 'REG_SZ', '/d', 'socks=127.0.0.1:1080', '/f']);
+          await regRun(['add', regPath, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '1', '/f']);
         } else {
           await regRun(['add', regPath, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f']);
-          await regRun(['delete', regPath, '/v', 'AutoConfigURL', '/f']);
         }
       } else if (Platform.isLinux) {
         if (enable) {
@@ -1026,20 +1209,6 @@ tls:
       debugPrint('System proxy setup failed: $e');
       _addLog('proxy setup error: $e');
     }
-  }
-
-  String _generatePacFile() {
-    final allBypass = [..._whitelistedDomains, ..._splitDomains];
-    final conditions = allBypass.map((d) =>
-      '    if (dnsDomainIs(host, "$d")) return "DIRECT";'
-    ).join('\n');
-    return '''function FindProxyForURL(url, host) {
-    // Russian government whitelisted domains — go direct
-$conditions
-
-    // Everything else through VPN (SOCKS5 for WebRTC leak prevention)
-    return "SOCKS5 127.0.0.1:1080; SOCKS 127.0.0.1:1080; DIRECT";
-}''';
   }
 
   // ── Speed test ──
@@ -1087,14 +1256,28 @@ $conditions
   void _showError(String msg) {
     if (!mounted) return;
     _addLog('ERROR: $msg');
-    // Hide technical details from regular users
-    final userMsg = (_userRole == 'admin' || _userRole == 'supermod') ? msg
+    // Hide technical details from regular users in the SHORT summary;
+    // the dialog still shows the full message so admins can copy/report it.
+    final summary = (_userRole == 'admin' || _userRole == 'supermod') ? msg
         : msg.contains('ProcessException') ? L.tr('failed')
         : msg.contains('curl') ? L.tr('failed')
         : msg.contains('No such file') ? L.tr('failed')
-        : msg.length > 80 ? '${msg.substring(0, 80)}...' : msg;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(userMsg), backgroundColor: Colors.red.shade900, duration: const Duration(seconds: 3)));
+        : msg.length > 200 ? '${msg.substring(0, 200)}…' : msg;
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => _ErrorDialog(
+        summary: summary,
+        fullMessage: msg,
+        recentLogs: _debugLogs.length > 50
+            ? _debugLogs.sublist(_debugLogs.length - 50).join('\n')
+            : _debugLogs.join('\n'),
+        appVersion: _appVersion,
+        platform: Platform.operatingSystem,
+        uuid: _uuid,
+        apiBase: _apiBase,
+      ),
+    );
   }
   void _showMsg(String msg) { if (!mounted) return; ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 3))); }
   String _fmtBytes(int b) { if (b < 1024) return '$b B'; if (b < 1048576) return '${(b / 1024).toStringAsFixed(0)} KB'; if (b < 1073741824) return '${(b / 1048576).toStringAsFixed(1)} MB'; return '${(b / 1073741824).toStringAsFixed(2)} GB'; }
@@ -1307,15 +1490,25 @@ $conditions
         setState(() => _whitelistMode = v);
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('whitelist_mode', v);
-        if (_connected) await _enableVpnRouting(_connectedServerIp ?? '');
+        // Whitelist is baked into orcax-connect args at launch — need to reconnect
+        if (_connected) {
+          await _disconnect();
+          await Future.delayed(const Duration(milliseconds: 300));
+          await _startProxy();
+        }
       },
       splitDomains: _splitDomains,
       onSplitDomainsChanged: (domains) async {
         setState(() => _splitDomains = domains);
         final prefs = await SharedPreferences.getInstance();
         await prefs.setStringList('split_domains', domains);
-        if (_connected) await _enableVpnRouting(_connectedServerIp ?? '');
+        if (_connected) {
+          await _disconnect();
+          await Future.delayed(const Duration(milliseconds: 300));
+          await _startProxy();
+        }
       },
+      awaitingCaptcha: _awaitingCaptcha,
     );
   }
 
@@ -1768,8 +1961,10 @@ $conditions
       if (!_codeRequested) ...[
         Text(L.tr('enter_telegram'), style: TextStyle(fontSize: 13, color: Colors.white.withValues(alpha: 0.5))),
         const SizedBox(height: 12),
-        TextField(controller: _handleCtl, style: const TextStyle(color: Colors.white, fontSize: 14),
-          decoration: InputDecoration(hintText: '@username or User ID', hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.2)),
+        TextField(controller: _handleCtl,
+          keyboardType: TextInputType.number,
+          style: const TextStyle(color: Colors.white, fontSize: 14),
+          decoration: InputDecoration(hintText: 'User ID', hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.2)),
             prefixIcon: Icon(Icons.person, color: Colors.white.withValues(alpha: 0.3), size: 18),
             filled: true, fillColor: Colors.white.withValues(alpha: 0.05),
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
@@ -2025,6 +2220,155 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   }
 }
 
+/// Dialog-style error popup matching `_UpdateDialog` look. Shows a compact
+/// summary, with Copy / Send Report / Close actions. "Send Report" forwards
+/// the full error + last 50 log lines to the support endpoint so it lands
+/// in the bot's admin chat for diagnosis. Disabled if user isn't logged in
+/// (no UUID), since the support endpoint is per-user.
+class _ErrorDialog extends StatefulWidget {
+  final String summary;
+  final String fullMessage;
+  final String recentLogs;
+  final String appVersion;
+  final String platform;
+  final String uuid;
+  final String apiBase;
+  const _ErrorDialog({
+    required this.summary,
+    required this.fullMessage,
+    required this.recentLogs,
+    required this.appVersion,
+    required this.platform,
+    required this.uuid,
+    required this.apiBase,
+  });
+
+  @override
+  State<_ErrorDialog> createState() => _ErrorDialogState();
+}
+
+class _ErrorDialogState extends State<_ErrorDialog> {
+  String _reportStatus = '';
+  bool _reporting = false;
+
+  String _buildReportPayload() {
+    return 'ERROR REPORT\n'
+        '─────────────\n'
+        'App: Fogged v${widget.appVersion} (${widget.platform})\n'
+        'UUID: ${widget.uuid.isEmpty ? "(not logged in)" : widget.uuid}\n'
+        '─────────────\n'
+        'Error:\n${widget.fullMessage}\n'
+        '─────────────\n'
+        'Recent logs:\n${widget.recentLogs}';
+  }
+
+  Future<void> _copy() async {
+    await Clipboard.setData(ClipboardData(text: _buildReportPayload()));
+    if (mounted) setState(() => _reportStatus = 'Copied to clipboard');
+  }
+
+  Future<void> _sendReport() async {
+    if (widget.uuid.isEmpty) {
+      setState(() => _reportStatus = 'Log in first to send reports');
+      return;
+    }
+    setState(() { _reporting = true; _reportStatus = 'Sending…'; });
+    try {
+      final resp = await http.post(
+        Uri.parse('${widget.apiBase}/support/create'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'uuid': widget.uuid, 'message': _buildReportPayload()}),
+      ).timeout(const Duration(seconds: 15));
+      if (mounted) {
+        setState(() {
+          _reporting = false;
+          _reportStatus = resp.statusCode == 200
+              ? 'Sent to admin ✓'
+              : 'Send failed (${resp.statusCode})';
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() { _reporting = false; _reportStatus = 'Send failed: $e'; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: const Color(0xFF0A0A0A),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Container(
+        width: 360, padding: const EdgeInsets.all(20),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Row(children: [
+            Icon(Icons.error_outline, color: Colors.red.shade300, size: 22),
+            const SizedBox(width: 8),
+            const Text('Error', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w800, letterSpacing: 1)),
+          ]),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+            ),
+            child: SelectableText(
+              widget.summary,
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 12, height: 1.45),
+            ),
+          ),
+          if (_reportStatus.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(_reportStatus, style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11)),
+          ],
+          const SizedBox(height: 16),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            GestureDetector(
+              onTap: _copy,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.1)), borderRadius: BorderRadius.circular(8)),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.copy, size: 13, color: Colors.white.withValues(alpha: 0.5)),
+                  const SizedBox(width: 6),
+                  Text('Copy', style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12)),
+                ]),
+              ),
+            ),
+            GestureDetector(
+              onTap: _reporting ? null : _sendReport,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.1)), borderRadius: BorderRadius.circular(8)),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  if (_reporting)
+                    const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.white))
+                  else
+                    Icon(Icons.send, size: 13, color: Colors.white.withValues(alpha: 0.5)),
+                  const SizedBox(width: 6),
+                  Text('Send Report', style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12)),
+                ]),
+              ),
+            ),
+            GestureDetector(
+              onTap: () => Navigator.pop(context),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                child: const Text('Close', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ]),
+        ]),
+      ),
+    );
+  }
+}
+
 class _GridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -2048,6 +2392,7 @@ class _SettingsScreen extends StatefulWidget {
   final ValueChanged<bool> onWhitelistChanged;
   final List<String> splitDomains;
   final ValueChanged<List<String>> onSplitDomainsChanged;
+  final bool awaitingCaptcha;
 
   const _SettingsScreen({
     required this.accountNumber, required this.subStatus, required this.subEndsAt,
@@ -2057,6 +2402,7 @@ class _SettingsScreen extends StatefulWidget {
     required this.server, required this.mode, required this.onLogout,
     required this.whitelistMode, required this.onWhitelistChanged,
     required this.splitDomains, required this.onSplitDomainsChanged,
+    required this.awaitingCaptcha,
   });
 
   @override
@@ -2207,6 +2553,27 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           ),
           const SizedBox(height: 20),
 
+          // Captcha banner — surfaces when vk-turn-client needs manual captcha.
+          // Shown regardless of which server the user picked (whitelist servers spawn vk-turn-client).
+          if (widget.awaitingCaptcha && !Platform.isAndroid) ...[
+            Container(
+              margin: const EdgeInsets.only(bottom: 20),
+              decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.orange.withValues(alpha: 0.3))),
+              child: GestureDetector(
+                onTap: () => launchUrl(Uri.parse('http://127.0.0.1:8765'), mode: LaunchMode.externalApplication),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(children: [
+                    Icon(Icons.warning_amber, color: Colors.orange, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text('VK is asking for a captcha. Tap here to solve in browser.',
+                      style: TextStyle(color: Colors.orange.shade300, fontSize: 12))),
+                  ]),
+                ),
+              ),
+            ),
+          ],
+
           // Split tunnel (custom bypass domains)
           _sectionTitle(L.tr('split_tunnel')),
           Container(
@@ -2260,15 +2627,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
                 onChanged: Platform.isMacOS ? (v) => _setAutoStart(v) : null,
                 title: Text('Auto-start on boot', style: TextStyle(color: Colors.white.withValues(alpha: Platform.isMacOS ? 1.0 : 0.3), fontSize: 13)),
                 subtitle: Text(Platform.isMacOS ? 'Launch Fogged when you log in' : 'macOS only', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
-                activeColor: Colors.white,
-                inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
-              ),
-              Divider(color: Colors.white.withValues(alpha: 0.06), height: 1),
-              SwitchListTile(
-                value: _killSwitch,
-                onChanged: null, // Requires Apple Developer (Network Extension) — coming soon
-                title: Text('Kill switch', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 13)),
-                subtitle: Text('Coming soon', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
                 activeColor: Colors.white,
                 inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
               ),
