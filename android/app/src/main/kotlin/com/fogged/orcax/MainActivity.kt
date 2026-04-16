@@ -33,6 +33,8 @@ class MainActivity : FlutterActivity() {
                     val vkCallLink = call.argument<String>("vkCallLink") ?: ""
                     val vkPeer = call.argument<String>("vkPeer") ?: ""
                     val vkIsVless = call.argument<Boolean>("vkIsVless") ?: false
+                    // Whitelist mode — makes RU_BYPASS_PACKAGES skip the VPN.
+                    val whitelistMode = call.argument<Boolean>("whitelistMode") ?: false
 
                     // Store connection params for the service
                     val prefs = getSharedPreferences("vpn", MODE_PRIVATE)
@@ -46,6 +48,7 @@ class MainActivity : FlutterActivity() {
                         .putString("vkCallLink", vkCallLink)
                         .putString("vkPeer", vkPeer)
                         .putBoolean("vkIsVless", vkIsVless)
+                        .putBoolean("whitelistMode", whitelistMode)
                         .apply()
 
                     // Request VPN permission

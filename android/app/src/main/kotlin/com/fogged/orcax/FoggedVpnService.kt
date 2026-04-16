@@ -28,6 +28,62 @@ class FoggedVpnService : VpnService() {
         const val NOTIFICATION_ID = 1
         const val CHANNEL_ID = "fogged_vpn"
         var isRunning = false
+
+        /**
+         * Android apps that must bypass the VPN when the user enables
+         * "Whitelist mode" (Track 2 of the RU-split-tunnel feature). These
+         * apps receive the phone's real Russian IP instead of our Finnish
+         * exit — banks + gosuslugi + VK don't see a foreign-ASN exit and
+         * therefore don't flag the user as a VPN user.
+         *
+         * Kept as a hardcoded allowlist (vs a user-editable list) so the
+         * behaviour is predictable and auditable. Apps that aren't
+         * installed on the device are skipped silently in startVpn().
+         */
+        val RU_BYPASS_PACKAGES = listOf(
+            // Banks
+            "ru.sberbankmobile",                    // Сбербанк Онлайн
+            "ru.sberbank.mobile",                   // (alt id)
+            "com.idamob.tinkoff.android",           // Тинькофф
+            "ru.vtb24.mobilebanking.android",       // ВТБ
+            "ru.alfabank.mobile.android",           // Альфа-Банк
+            "ru.rosbank.android",                   // Росбанк
+            "ru.raiffeisennews",                    // Райффайзен
+            "ru.gazprombank.mobile.android",        // Газпромбанк
+            "ru.mtsbank.mobile",                    // МТС Банк
+            "ru.psbank.mobile",                     // ПСБ
+            // Government
+            "ru.gosuslugi.app",                     // Госуслуги
+            "ru.rostelecom.esia",                   // Госуслуги (alt)
+            "ru.mos.app",                           // Мос.ру
+            "ru.taxcom.mycheck",                    // Мой налог
+            "ru.nalog.phystech",                    // ФНС
+            // Social / search
+            "com.vkontakte.android",                // ВКонтакте
+            "com.vk.im",                            // VK Мессенджер
+            "ru.ok.android",                        // Одноклассники
+            "ru.yandex.searchplugin",               // Яндекс
+            "ru.yandex.taxi",                       // Яндекс Go
+            "ru.yandex.maps",                       // Яндекс Карты
+            "ru.yandex.market",                     // Яндекс Маркет
+            "ru.yandex.money",                      // ЮMoney
+            "ru.mail.mailapp",                      // Mail.ru
+            // E-commerce / logistics
+            "ru.wildberries.wbclient",              // Wildberries
+            "com.ozon.mysmart",                     // OZON
+            "ru.cdek.sender",                       // СДЭК
+            "ru.aliexpress.buyer",                  // AliExpress RU
+            // Carriers
+            "ru.mts.mymts",                         // МТС
+            "ru.beeline.services",                  // Билайн
+            "ru.megafon.mlk",                       // МегаФон
+            "com.tele2.mytele2",                    // Tele2
+            // Jobs / services
+            "ru.hh.android",                        // hh.ru
+            "ru.rabota.app2",                       // rabota.ru
+            "ru.sulpak.cdek",                       // Avito
+            "com.avito.android",                    // Avito
+        )
     }
 
     private var tunFd: ParcelFileDescriptor? = null
@@ -57,6 +113,7 @@ class FoggedVpnService : VpnService() {
         val vkCallLink = prefs.getString("vkCallLink", "") ?: ""
         val vkPeer = prefs.getString("vkPeer", "") ?: ""
         val vkIsVless = prefs.getBoolean("vkIsVless", false)
+        val whitelistMode = prefs.getBoolean("whitelistMode", false)
 
         if (server.isEmpty() || uuid.isEmpty()) {
             Log.e(TAG, "Missing server or uuid")
@@ -81,6 +138,24 @@ class FoggedVpnService : VpnService() {
 
         // Exclude our own app from VPN to prevent loops
         try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
+
+        // Whitelist mode: known Russian banking / gosuslugi / social apps
+        // bypass the VPN so they see the phone's real Russian IP and aren't
+        // flagged as VPN users by the fingerprinting methods catalogued in
+        // the Минцифры methodology doc (GeoIP/ASN/SNITCH). Apps that aren't
+        // installed on this device are skipped silently.
+        if (whitelistMode) {
+            var bypassed = 0
+            for (pkg in RU_BYPASS_PACKAGES) {
+                try {
+                    builder.addDisallowedApplication(pkg)
+                    bypassed++
+                } catch (_: Exception) {
+                    // PackageManager.NameNotFoundException — app not installed.
+                }
+            }
+            Log.i(TAG, "whitelistMode: bypassed $bypassed of ${RU_BYPASS_PACKAGES.size} known RU apps")
+        }
 
         tunFd = builder.establish()
         if (tunFd == null) {

@@ -860,6 +860,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           'vkCallLink': isVkTurn ? _vkCallLink : '',
           'vkPeer': isVkTurn ? srv.addr : '',
           'vkIsVless': isVkTurn && proto == 'vless',
+          // Whitelist mode — FoggedVpnService applies addDisallowedApplication
+          // to a hardcoded list of RU banking/gosuslugi/social apps so they
+          // bypass the VPN and see the phone's real Russian IP.
+          'whitelistMode': _whitelistMode,
         });
         if (result == true) {
           setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
@@ -919,35 +923,27 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         _addLog('Whitelist: launching vk-turn-client → VK TURN → $peer');
         _blackoutProcess = await Process.start(vkBin, vkArgs);
 
-        // Wait for readiness signal. vk-turn-client uses Go's stdlib `log` which
-        // writes EVERYTHING (including "VLESS mode: listening") to STDERR, not
-        // stdout. So we watch both streams. We MATCH ONLY ON the actual ready
-        // strings emitted by vk-turn-client; do NOT use a generic "ready"
-        // substring because it false-matches things like "address already in
-        // use".
+        // Readiness detection: the vk-turn-client's log output format has
+        // changed between versions (e.g. "VLESS mode: listening" vs
+        // "Established DTLS connection!"), and relying on a specific string
+        // has burned real users (we'd kill a working tunnel at 90s because
+        // logs didn't match). We now detect readiness via a TCP probe of
+        // 127.0.0.1:9002 — the only thing that actually matters is whether
+        // something is listening there. Log scanning stays for fatal-error
+        // fast-fail and for captcha UI state.
         final ready = Completer<bool>();
         var hadFatalError = false;
         void scan(String l, String prefix) {
           if (!mounted) return;
           _addLog('$prefix$l');
           final lower = l.toLowerCase();
-          // Specific ready strings from vk-turn-proxy/client/main.go:
-          //   "VLESS mode: listening on 127.0.0.1:..."
-          //   "UDP mode: listening on 127.0.0.1:..."
-          //   "UDP mode: forwarding ..."
-          if (!ready.isCompleted && (
-              lower.contains('vless mode: listening on') ||
-              lower.contains('udp mode: listening on') ||
-              lower.contains('mode: forwarding'))) {
-            ready.complete(true);
-          }
-          // Detect fatal panic — fail fast instead of waiting 90s timeout.
+          // Fast-fail on known fatal conditions (don't wait 90s).
           if (!ready.isCompleted && (
               lower.startsWith('panic:') ||
               lower.contains('address already in use') ||
               lower.contains('fatal error:'))) {
             hadFatalError = true;
-            if (!ready.isCompleted) ready.complete(false);
+            ready.complete(false);
           }
           if (lower.contains('action required: manual captcha')) {
             setState(() => _awaitingCaptcha = true);
@@ -960,24 +956,38 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             .listen((l) => scan(l, 'vk-turn: '));
         _blackoutProcess!.stderr.transform(utf8.decoder).transform(const LineSplitter())
             .listen((l) => scan(l, 'vk-turn err: '));
-        try {
-          final ok = await ready.future.timeout(const Duration(seconds: 90));
-          if (!ok || hadFatalError) {
-            _blackoutProcess?.kill();
-            _blackoutProcess = null;
-            _showError('Whitelist tunnel failed to start (vk-turn-client crashed). Check log.');
-            setState(() => _connecting = false);
-            return;
+
+        // Poll 127.0.0.1:9002 every 200ms. First successful connect ⇒ ready.
+        // 120s ceiling (up from 90s) because manual-captcha flows routinely
+        // eat 30-60s of user time before DTLS even starts.
+        unawaited(() async {
+          final deadline = DateTime.now().add(const Duration(seconds: 120));
+          while (DateTime.now().isBefore(deadline) && !ready.isCompleted) {
+            try {
+              final s = await Socket.connect('127.0.0.1', 9002, timeout: const Duration(milliseconds: 500));
+              await s.close();
+              if (!ready.isCompleted) ready.complete(true);
+              return;
+            } catch (_) {
+              await Future.delayed(const Duration(milliseconds: 200));
+            }
           }
-          _addLog('Whitelist tunnel ready');
-        } on TimeoutException {
-          _addLog('Whitelist tunnel failed to come up within 90s');
+          if (!ready.isCompleted) ready.complete(false);
+        }());
+
+        final ok = await ready.future;
+        if (!ok || hadFatalError) {
+          final reason = hadFatalError
+              ? 'vk-turn-client crashed (check log)'
+              : 'timed out waiting for :9002 — manual captcha may have been skipped';
+          _addLog('Whitelist tunnel failed: $reason');
           _blackoutProcess?.kill();
           _blackoutProcess = null;
-          _showError('Whitelist tunnel timed out — pick another server or retry later.');
+          _showError('Whitelist tunnel failed to start — $reason');
           setState(() => _connecting = false);
           return;
         }
+        _addLog('Whitelist tunnel ready (listening on 127.0.0.1:9002)');
       }
 
       if (proto == 'orcax') {
@@ -2266,7 +2276,12 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       setState(() { _status = 'Installing...'; _progress = 1.0; });
 
       if (Platform.isMacOS) {
-        // Save as ZIP, extract silently, copy to Applications — no Finder popups
+        // Save ZIP → extract → hand the new .app off to a detached helper
+        // script that (1) waits for US to exit so the running bundle releases
+        // its file locks, (2) swaps /Applications/Fogged.app, (3) strips the
+        // quarantine xattr so Gatekeeper doesn't re-challenge, (4) relaunches.
+        // Doing rm+cp in-process fails with EPERM because Fogged is still
+        // holding open fds on its own Mach-O binary.
         final zipPath = '/tmp/Fogged-Update.zip';
         final extractDir = '/tmp/Fogged-Update';
         await File(zipPath).writeAsBytes(bytes);
@@ -2288,38 +2303,60 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             }
           }
           if (appPath != null && appPath.isNotEmpty) {
-            setState(() => _status = 'Replacing app...');
-            await Process.run('rm', ['-rf', '/Applications/Fogged.app']);
-            await Process.run('cp', ['-R', appPath, '/Applications/']);
-
-            // Cleanup update files
-            await File(zipPath).delete();
-            await Directory(extractDir).delete(recursive: true);
-
-            // Mark this version as installed so we don't prompt again
+            // Mark this version as installed so we don't re-prompt on relaunch.
             final p = await SharedPreferences.getInstance();
             await p.setString('update_installed_version', widget.version);
-            setState(() => _status = 'Updated! Restarting...');
-            // Use a tiny helper script: wait for old app to exit, then launch new one
-            final relaunchScript = '${Directory.systemTemp.path}/fogged-relaunch-${DateTime.now().millisecondsSinceEpoch}.sh';
-            await File(relaunchScript).writeAsString(
+            setState(() => _status = 'Updating...');
+
+            final myPid = pid;
+            final updaterScript = '${Directory.systemTemp.path}/fogged-updater-${DateTime.now().millisecondsSinceEpoch}.sh';
+            // Shell-quote the extracted app path so spaces don't break cp.
+            final quotedNewApp = "'${appPath.replaceAll("'", "'\\''")}'";
+            await File(updaterScript).writeAsString(
               '#!/bin/bash\n'
-              '# Wait for old Fogged to fully exit\n'
+              '# Fogged macOS updater — runs detached after parent exit.\n'
+              'set +e\n'
+              '# 1. Wait for the running Fogged process to exit (bounded, 30s).\n'
+              'for _ in \$(seq 1 60); do\n'
+              '  if ! kill -0 $myPid 2>/dev/null; then break; fi\n'
+              '  sleep 0.5\n'
+              'done\n'
+              '# Extra belt-and-braces: kill any stragglers named Fogged.\n'
               'while pgrep -x "Fogged" > /dev/null 2>&1; do sleep 0.5; done\n'
               'sleep 1\n'
-              'open /Applications/Fogged.app\n'
+              '# 2. Swap the bundle. rm may partial-fail if user has another\n'
+              '#    copy open — cp handles that by overwriting what it can.\n'
+              'rm -rf "/Applications/Fogged.app"\n'
+              'cp -R $quotedNewApp "/Applications/Fogged.app"\n'
+              'if [ ! -d "/Applications/Fogged.app" ]; then\n'
+              '  # Install path not writable (user installed to ~/Applications?\n'
+              '  # or is on a read-only volume). Fall back to ~/Applications.\n'
+              '  mkdir -p "\$HOME/Applications"\n'
+              '  cp -R $quotedNewApp "\$HOME/Applications/Fogged.app"\n'
+              '  APP_TARGET="\$HOME/Applications/Fogged.app"\n'
+              'else\n'
+              '  APP_TARGET="/Applications/Fogged.app"\n'
+              'fi\n'
+              '# 3. Strip quarantine so Gatekeeper doesn\'t re-challenge.\n'
+              'xattr -rd com.apple.quarantine "\$APP_TARGET" 2>/dev/null || true\n'
+              '# 4. Relaunch.\n'
+              'open "\$APP_TARGET"\n'
+              '# 5. Cleanup.\n'
+              'rm -f "$zipPath"\n'
+              'rm -rf "$extractDir"\n'
               'rm -f "\$0"\n'
             );
-            await Process.run('chmod', ['+x', relaunchScript]);
-            await Process.start(relaunchScript, [], mode: ProcessStartMode.detached);
+            await Process.run('chmod', ['+x', updaterScript]);
+            // Detach so the script survives us.
+            await Process.start(updaterScript, [], mode: ProcessStartMode.detached);
             await Future.delayed(const Duration(milliseconds: 500));
             exit(0);
           }
         }
-        // Cleanup on failure
+        // Cleanup on failure (couldn't find .app in zip, or unzip failed)
         try { await File(zipPath).delete(); } catch (_) {}
         try { await Directory(extractDir).delete(recursive: true); } catch (_) {}
-        setState(() => _status = 'Install failed');
+        setState(() => _status = 'Install failed — download ok, extraction empty');
       } else if (Platform.isWindows) {
         final exePath = '${Platform.environment['TEMP']}\\Fogged-Setup.exe';
         await File(exePath).writeAsBytes(bytes);
@@ -2655,14 +2692,26 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           _sectionTitle('Whitelist Mode'),
           Container(
             decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white.withValues(alpha: 0.08))),
-            child: SwitchListTile(
-              value: widget.whitelistMode,
-              onChanged: widget.onWhitelistChanged,
-              title: const Text('Bypass whitelisted sites', style: TextStyle(color: Colors.white, fontSize: 13)),
-              subtitle: Text('VK, Yandex, Sber, Gosuslugi go direct', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
-              activeColor: Colors.white,
-              inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
-            ),
+            child: Column(children: [
+              SwitchListTile(
+                value: widget.whitelistMode,
+                onChanged: widget.onWhitelistChanged,
+                title: const Text('Bypass whitelisted sites', style: TextStyle(color: Colors.white, fontSize: 13)),
+                subtitle: Text(L.tr('whitelist_bypass_subtitle'), style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
+                activeColor: Colors.white,
+                inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
+              ),
+              if (widget.whitelistMode) Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(L.tr('whitelist_bypass_list_label'),
+                      style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1)),
+                  const SizedBox(height: 6),
+                  Text(L.tr('whitelist_bypass_list_preview'),
+                      style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 11, height: 1.5)),
+                ]),
+              ),
+            ]),
           ),
           const SizedBox(height: 20),
 
