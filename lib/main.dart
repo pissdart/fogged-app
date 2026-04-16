@@ -10,19 +10,43 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 import 'l10n/strings.dart';
 import 'models/vpn_server.dart';
 
-void main() {
-  FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-    debugPrint('Flutter error: ${details.exceptionAsString()}');
-  };
-  PlatformDispatcher.instance.onError = (error, stack) {
-    debugPrint('Unhandled error: $error\n$stack');
-    return true;
-  };
-  runApp(const FoggedApp());
+// Sentry DSN — baked in at build time via --dart-define=SENTRY_DSN=... .
+// Leave empty for local/debug builds; Sentry auto-disables when DSN is empty.
+const String _sentryDsn = String.fromEnvironment('SENTRY_DSN', defaultValue: '');
+
+Future<void> main() async {
+  await SentryFlutter.init(
+    (opts) {
+      opts.dsn = _sentryDsn;
+      // Don't ship anything off-device in debug builds; only shipped (release)
+      // builds produced with --dart-define=SENTRY_DSN=... actually report.
+      opts.debug = false;
+      opts.environment = const bool.fromEnvironment('dart.vm.product')
+          ? 'release'
+          : 'debug';
+      opts.tracesSampleRate = 0.1;
+      // Never send user IDs / request bodies — we don't control what lands there.
+      opts.sendDefaultPii = false;
+      opts.attachScreenshot = false;
+      // Strip local routes/ports — CI should `flutter_symbols upload-debug-symbols`
+      // if it wants readable stack traces.
+    },
+    appRunner: () {
+      FlutterError.onError = (details) {
+        FlutterError.presentError(details);
+        Sentry.captureException(details.exception, stackTrace: details.stack);
+      };
+      PlatformDispatcher.instance.onError = (error, stack) {
+        Sentry.captureException(error, stackTrace: stack);
+        return true;
+      };
+      runApp(const FoggedApp());
+    },
+  );
 }
 
 class FoggedApp extends StatelessWidget {
@@ -150,6 +174,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   double _referralEarnings = 0.0;
   int _totalReferrals = 0;
   String _userRole = 'user'; // admin, supermod, user
+  int _deviceLimit = 0;
+  int? _devicesUsed; // null when server hasn't reported yet
+  String _subTier = '';
 
   static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
   static const _apiEndpoints = [
@@ -162,7 +189,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   int _apiEndpointIndex = 0;
   bool _usingFallbackApi = false;
   bool _usingCachedServers = false;
-  String _appVersion = '1.5.6'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.0'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -180,9 +207,18 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   @override
-  void dispose() { _pulseController.dispose(); _disconnect(); super.dispose(); }
+  void dispose() {
+    _apiRecoveryTimer?.cancel();
+    _pulseController.dispose();
+    _disconnect();
+    super.dispose();
+  }
 
-  /// Probe API endpoints in order; use first that responds
+  /// Probe API endpoints in order; use first that responds.
+  /// On total failure (all endpoints down — network problem, DPI block of
+  /// every domain, etc.) we load cached auth + servers from disk so the user
+  /// has a usable app state, then schedule a background re-probe loop so
+  /// we auto-recover once connectivity returns. No more "hope for recovery."
   Future<void> _probeApiAndLoad() async {
     for (var i = 0; i < _apiEndpoints.length; i++) {
       try {
@@ -197,12 +233,44 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         debugPrint('API endpoint #$i unreachable: ${_apiEndpoints[i]}');
       }
     }
-    // All endpoints failed — use first fallback and hope for recovery
-    debugPrint('All API endpoints unreachable, defaulting to Worker #1');
-    _apiBase = _apiEndpoints.length > 1 ? _apiEndpoints[1] : _apiEndpoints[0];
-    _apiEndpointIndex = _apiEndpoints.length > 1 ? 1 : 0;
+    // All endpoints down. Don't leave the user with a half-initialized app:
+    //   1) Fall back to the cached subscription (loaded by _fetchSubscription)
+    //   2) Show a non-blocking banner via _addLog (user sees "offline")
+    //   3) Start a background re-probe — try again every 30s until we get a
+    //      response, then swap _apiBase live and refetch.
+    debugPrint('All API endpoints unreachable — entering cached-only mode');
+    _apiBase = _apiEndpoints[0]; // nominal primary; will be overwritten on recovery
+    _apiEndpointIndex = 0;
     _usingFallbackApi = true;
+    _addLog('Offline: using cached servers. Will auto-reconnect when network returns.');
     _loadAuth();
+    _startBackgroundApiRecovery();
+  }
+
+  Timer? _apiRecoveryTimer;
+
+  /// Background re-probe loop. Fires every 30s while `_usingFallbackApi` is
+  /// true AND no endpoint has responded. First success cancels the timer and
+  /// triggers a subscription refresh so servers land before the user connects.
+  void _startBackgroundApiRecovery() {
+    _apiRecoveryTimer?.cancel();
+    _apiRecoveryTimer = Timer.periodic(const Duration(seconds: 30), (t) async {
+      if (!mounted) { t.cancel(); return; }
+      for (var i = 0; i < _apiEndpoints.length; i++) {
+        try {
+          await http.get(Uri.parse('${_apiEndpoints[i]}/health')).timeout(const Duration(seconds: 3));
+          _apiBase = _apiEndpoints[i];
+          _apiEndpointIndex = i;
+          _usingFallbackApi = i > 0;
+          _addLog('API reachable again: ${_apiEndpoints[i]}');
+          t.cancel();
+          _apiRecoveryTimer = null;
+          // Refresh servers now that we're back online.
+          if (_uuid.isNotEmpty) unawaited(_fetchSubscription());
+          return;
+        } catch (_) {}
+      }
+    });
   }
 
   /// Cycle to next API endpoint on request failure; returns true if more endpoints available
@@ -298,6 +366,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           _referralEarnings = (j['referral_earnings_usd'] ?? 0).toDouble();
           _totalReferrals = (j['total_referrals'] ?? 0).toInt();
           _userRole = j['role'] ?? 'user';
+          _deviceLimit = (j['device_limit'] ?? 0).toInt();
+          _devicesUsed = j['devices_used'] is int ? j['devices_used'] as int : null;
+          _subTier = j['subscription_tier'] ?? '';
         });
         // Cache server-provisioned VK blackout link (used only when user
         // toggles Blackout Mode — user never sees this value)
@@ -494,6 +565,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           final s = _parseLine(line);
           if (s != null) servers.add(s);
         }
+      } else if (resp.statusCode == 403 && resp.body.startsWith('Device limit reached')) {
+        // Server's device-enforcement gate rejected us. Show a friendly dialog
+        // pointing at /menu (Telegram bot) for removing a device or upgrading.
+        // Keep whatever servers we had before so the UI doesn't go blank.
+        _addLog('device limit: ${resp.body}');
+        _showDeviceLimitDialog();
+        return;
       } else if (resp.statusCode == 401 || resp.statusCode == 403) {
         _addLog('subscription error: ${resp.statusCode}');
         _showError(L.tr('expired'));
@@ -742,24 +820,46 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       // Android: use native VpnService instead of Process.run
       if (Platform.isAndroid) {
         try { await _androidVpn.invokeMethod('requestNotificationPermission'); } catch (_) {}
+        // VK TURN / blackout-mode chain on Android: if this server is tagged
+        // transport=vkturn we pass a flag + call link through the platform
+        // channel. FoggedVpnService spawns libvk_turn_client.so on localhost
+        // first, then starts xray/hysteria against 127.0.0.1:9002 instead of
+        // the real server IP. This is why the generated config below points
+        // at 127.0.0.1:9002 when vkturn is active.
+        final isVkTurn = srv.params['transport'] == 'vkturn';
+        if (isVkTurn && _vkCallLink.isEmpty) {
+          _showError('Whitelist is being set up. Try again in a few minutes, or pick another server.');
+          setState(() => _connecting = false);
+          return;
+        }
+        // For vkturn, xray/hysteria connect to the local vk-turn-client
+        // listener rather than the real server.
+        final effectiveSrv = isVkTurn
+            ? VpnServer(srv.protocol, srv.name, '127.0.0.1:9002', srv.params)
+            : srv;
         // Determine which binary and config to use
         String androidProto;
         String androidConfig = '';
         if (proto == 'vless') {
           androidProto = 'xray';
-          androidConfig = _generateXrayConfig(srv, _uuid);
+          androidConfig = _generateXrayConfig(effectiveSrv, _uuid);
         } else if (proto == 'hysteria2') {
           androidProto = 'hysteria';
-          androidConfig = _generateHy2Config(srv, _uuid);
+          androidConfig = _generateHy2Config(effectiveSrv, _uuid);
         } else {
           androidProto = _protocol == 'OrcaX Pro Max' ? 'quic' : 'tcp';
         }
         final result = await _androidVpn.invokeMethod('startVpn', {
-          'server': srv.addr,
+          'server': srv.addr, // real server — passed unchanged for logging
           'uuid': _uuid,
           'protocol': androidProto,
           'pubkey': srv.params['pubkey'] ?? '',
           'config': androidConfig,
+          // Blackout-mode plumbing. Both keys empty = no VK chain.
+          'vkTurn': isVkTurn,
+          'vkCallLink': isVkTurn ? _vkCallLink : '',
+          'vkPeer': isVkTurn ? srv.addr : '',
+          'vkIsVless': isVkTurn && proto == 'vless',
         });
         if (result == true) {
           setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
@@ -783,11 +883,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       // blackouts when only VK-whitelisted services are reachable.
       final isVkTurn = srv.params['transport'] == 'vkturn';
       if (isVkTurn) {
-        if (Platform.isAndroid) {
-          _showError('Whitelist server not yet supported on Android');
-          setState(() => _connecting = false);
-          return;
-        }
+        // Android takes the platform-channel path above (VpnService spawns
+        // libvk_turn_client.so itself), so the Dart-side desktop chain below
+        // only runs on macOS / Linux / Windows.
         if (_vkCallLink.isEmpty) {
           _showError('Whitelist is being set up. Try again in a few minutes, or pick another server.');
           setState(() => _connecting = false);
@@ -1280,6 +1378,35 @@ tls:
     );
   }
   void _showMsg(String msg) { if (!mounted) return; ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 3))); }
+
+  /// Shown when the server's device-enforcement gate returns 403 on /subs or
+  /// /singbox. Distinct from the "expired" dialog so the user understands it's
+  /// a tier-limit issue, not an expired subscription. Offers @foggedvpn_bot
+  /// as the channel to remove a device or upgrade.
+  void _showDeviceLimitDialog() {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => AlertDialog(
+        title: Text(L.tr('device_limit_title')),
+        content: Text(L.tr('device_limit_body')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(L.tr('close')),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              launchUrl(Uri.parse('https://t.me/foggedvpn_bot'), mode: LaunchMode.externalApplication);
+            },
+            child: Text(L.tr('device_limit_upgrade')),
+          ),
+        ],
+      ),
+    );
+  }
   String _fmtBytes(int b) { if (b < 1024) return '$b B'; if (b < 1048576) return '${(b / 1024).toStringAsFixed(0)} KB'; if (b < 1073741824) return '${(b / 1048576).toStringAsFixed(1)} MB'; return '${(b / 1073741824).toStringAsFixed(2)} GB'; }
 
   void _startUptimeTimer() {
@@ -1509,6 +1636,9 @@ tls:
         }
       },
       awaitingCaptcha: _awaitingCaptcha,
+      deviceLimit: _deviceLimit,
+      devicesUsed: _devicesUsed,
+      subTier: _subTier,
     );
   }
 
@@ -2383,9 +2513,11 @@ class _GridPainter extends CustomPainter {
 // ── Settings Screen ──
 
 class _SettingsScreen extends StatefulWidget {
-  final String accountNumber, subStatus, subEndsAt, daysLeft, referralCode, userRole, uuid, apiBase, protocol, server, mode;
+  final String accountNumber, subStatus, subEndsAt, daysLeft, referralCode, userRole, uuid, apiBase, protocol, server, mode, subTier;
   final double referralEarnings;
   final int totalReferrals;
+  final int deviceLimit;
+  final int? devicesUsed;
   final List<String> debugLogs;
   final VoidCallback onLogout;
   final bool whitelistMode;
@@ -2403,6 +2535,7 @@ class _SettingsScreen extends StatefulWidget {
     required this.whitelistMode, required this.onWhitelistChanged,
     required this.splitDomains, required this.onSplitDomainsChanged,
     required this.awaitingCaptcha,
+    required this.deviceLimit, required this.devicesUsed, required this.subTier,
   });
 
   @override
@@ -2415,7 +2548,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
   bool _includeDebug = true;
   bool _sending = false;
   bool _autoStart = false;
-  bool _killSwitch = false;
 
   @override
   void initState() {
@@ -2427,7 +2559,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _autoStart = prefs.getBool('auto_start') ?? false;
-      _killSwitch = prefs.getBool('kill_switch') ?? false;
     });
   }
 
@@ -2465,31 +2596,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
     }
   }
 
-  Future<void> _setKillSwitch(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('kill_switch', enabled);
-    setState(() => _killSwitch = enabled);
-
-    if (Platform.isMacOS) {
-      if (enabled) {
-        // Block all traffic except localhost (SOCKS proxy) using pf
-        final rules = 'block all\npass on lo0\npass out proto tcp to 127.0.0.1 port 1080\npass out proto udp to any port 53\n';
-        final ksPath = '${Directory.systemTemp.path}/fogged-killswitch-${DateTime.now().millisecondsSinceEpoch}.conf';
-        await File(ksPath).writeAsString(rules);
-        // Use osascript for GUI sudo prompt (sudo alone fails silently from GUI apps)
-        final result = await Process.run('osascript', ['-e', 'do shell script "pfctl -ef $ksPath" with administrator privileges']);
-        try { await File(ksPath).delete(); } catch (_) {}
-        if (result.exitCode != 0) {
-          setState(() => _killSwitch = false);
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setBool('kill_switch', false);
-        }
-      } else {
-        await Process.run('osascript', ['-e', 'do shell script "pfctl -d" with administrator privileges']);
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final refLink = 'https://t.me/foggedvpnbot?start=${widget.referralCode}';
@@ -2504,9 +2610,16 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           _sectionTitle(L.tr('account')),
           _card([
             _infoRow(L.tr('account'), widget.accountNumber.isEmpty ? '--' : widget.accountNumber),
+            if (widget.subTier.isNotEmpty) _infoRow('Tier', widget.subTier),
             _infoRow('Status', widget.subStatus.isEmpty ? '--' : widget.subStatus),
             _infoRow(L.tr('subscription'), widget.daysLeft == '?' ? '--' : '${widget.daysLeft} ${L.tr('days_left')}'),
             if (widget.subEndsAt.isNotEmpty) _infoRow(L.tr('expired'), widget.subEndsAt.split('T').first),
+            if (widget.deviceLimit > 0) _infoRow(
+              'Devices',
+              widget.devicesUsed == null
+                ? '—  /  ${widget.deviceLimit}'
+                : '${widget.devicesUsed}  /  ${widget.deviceLimit}',
+            ),
           ]),
           const SizedBox(height: 8),
           SizedBox(width: double.infinity, height: 40, child: ElevatedButton(

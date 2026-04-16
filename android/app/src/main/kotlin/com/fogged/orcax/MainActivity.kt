@@ -25,6 +25,14 @@ class MainActivity : FlutterActivity() {
                     val protocol = call.argument<String>("protocol") ?: "quic"
                     val pubkey = call.argument<String>("pubkey") ?: ""
                     val config = call.argument<String>("config") ?: ""
+                    // VK TURN / blackout-mode chain. When vkTurn=true the
+                    // service spawns libvk_turn_client.so before xray/hysteria;
+                    // xray/hysteria then connect to 127.0.0.1:9002 (per config
+                    // rewritten on the Dart side).
+                    val vkTurn = call.argument<Boolean>("vkTurn") ?: false
+                    val vkCallLink = call.argument<String>("vkCallLink") ?: ""
+                    val vkPeer = call.argument<String>("vkPeer") ?: ""
+                    val vkIsVless = call.argument<Boolean>("vkIsVless") ?: false
 
                     // Store connection params for the service
                     val prefs = getSharedPreferences("vpn", MODE_PRIVATE)
@@ -34,6 +42,10 @@ class MainActivity : FlutterActivity() {
                         .putString("protocol", protocol)
                         .putString("pubkey", pubkey)
                         .putString("config", config)
+                        .putBoolean("vkTurn", vkTurn)
+                        .putString("vkCallLink", vkCallLink)
+                        .putString("vkPeer", vkPeer)
+                        .putBoolean("vkIsVless", vkIsVless)
                         .apply()
 
                     // Request VPN permission

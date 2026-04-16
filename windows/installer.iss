@@ -25,6 +25,15 @@ WizardStyle=modern
 DisableProgramGroupPage=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 
+; Code-sign the installer + the uninstaller when a signing profile is
+; configured. Inno Setup looks up the tool name by the first token.
+; Configure FOGGED_SIGNTOOL on the build host, e.g.:
+;   iscc /DSignTool="signtool sign /tr http://timestamp.digicert.com /td sha256 /fd sha256 /a $f" installer.iss
+; Or put the tool into Inno's [Code] config. Both installer and uninstaller
+; will be signed when SignTool= is set.
+SignTool=fogged_signtool
+SignedUninstaller=yes
+
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"

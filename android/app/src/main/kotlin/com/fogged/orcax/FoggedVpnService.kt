@@ -33,6 +33,7 @@ class FoggedVpnService : VpnService() {
     private var tunFd: ParcelFileDescriptor? = null
     private var orcaxProcess: Process? = null
     private var tun2socksProcess: Process? = null
+    private var vkTurnProcess: Process? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -52,9 +53,18 @@ class FoggedVpnService : VpnService() {
         val uuid = prefs.getString("uuid", "") ?: ""
         val protocol = prefs.getString("protocol", "quic") ?: "quic"
         val config = prefs.getString("config", "") ?: ""
+        val vkTurn = prefs.getBoolean("vkTurn", false)
+        val vkCallLink = prefs.getString("vkCallLink", "") ?: ""
+        val vkPeer = prefs.getString("vkPeer", "") ?: ""
+        val vkIsVless = prefs.getBoolean("vkIsVless", false)
 
         if (server.isEmpty() || uuid.isEmpty()) {
             Log.e(TAG, "Missing server or uuid")
+            stopSelf()
+            return
+        }
+        if (vkTurn && (vkCallLink.isEmpty() || vkPeer.isEmpty())) {
+            Log.e(TAG, "vkTurn requested but vkCallLink/vkPeer missing")
             stopSelf()
             return
         }
@@ -88,6 +98,7 @@ class FoggedVpnService : VpnService() {
         val xrayBin = "$nativeDir/libxray.so"
         val hysteriaBin = "$nativeDir/libhysteria.so"
         val tun2socksBin = "$nativeDir/libtun2socks.so"
+        val vkTurnBin = "$nativeDir/libvk_turn_client.so"
 
         // Verify required binaries exist before starting
         val requiredBin = when (protocol) {
@@ -104,6 +115,56 @@ class FoggedVpnService : VpnService() {
             Log.e(TAG, "tun2socks not found: $tun2socksBin")
             stopVpn()
             return
+        }
+        if (vkTurn && !java.io.File(vkTurnBin).exists()) {
+            Log.e(TAG, "vk-turn-client not found: $vkTurnBin")
+            stopVpn()
+            return
+        }
+
+        // Spawn vk-turn-client FIRST if blackout-mode chain is requested.
+        // It listens on 127.0.0.1:9002 and tunnels through VK TURN
+        // infrastructure to the real `vkPeer`. xray/hysteria below connect
+        // to 127.0.0.1:9002 (config was rewritten on the Dart side).
+        if (vkTurn) {
+            try {
+                val vkCmd = mutableListOf(
+                    vkTurnBin,
+                    "-listen", "127.0.0.1:9002",
+                    "-peer", vkPeer,
+                    "-vk-link", vkCallLink,
+                    "-n", "3",
+                )
+                if (vkIsVless) {
+                    vkCmd.add("-vless")
+                }
+                val pb = ProcessBuilder(vkCmd)
+                pb.redirectErrorStream(true)
+                vkTurnProcess = pb.start()
+                Log.i(TAG, "vk-turn-client started → $vkPeer (vless=$vkIsVless)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start vk-turn-client: ${e.message}")
+                stopVpn()
+                return
+            }
+            // Wait up to 10s for vk-turn-client to bind 127.0.0.1:9002.
+            val vkReady = System.currentTimeMillis()
+            var ok = false
+            while (System.currentTimeMillis() - vkReady < 10_000L) {
+                try {
+                    java.net.Socket("127.0.0.1", 9002).close()
+                    ok = true
+                    break
+                } catch (_: Exception) {
+                    Thread.sleep(200)
+                }
+            }
+            if (!ok) {
+                Log.e(TAG, "vk-turn-client never bound :9002")
+                stopVpn()
+                return
+            }
+            Log.i(TAG, "vk-turn-client ready on :9002")
         }
 
         // Start the right proxy binary based on protocol
@@ -181,8 +242,10 @@ class FoggedVpnService : VpnService() {
         isRunning = false
         tun2socksProcess?.destroy()
         orcaxProcess?.destroy()
+        vkTurnProcess?.destroy()
         tun2socksProcess = null
         orcaxProcess = null
+        vkTurnProcess = null
         tunFd?.close()
         tunFd = null
         stopForeground(STOP_FOREGROUND_REMOVE)

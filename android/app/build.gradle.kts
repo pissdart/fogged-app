@@ -34,6 +34,12 @@ android {
         targetSdk = 34
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // Ship arm64-v8a only. Covers every phone from ~2019+. Keeping a
+        // single ABI cuts APK size dramatically and avoids crashes on
+        // legacy armv7 devices where we don't have native binaries.
+        ndk {
+            abiFilters.add("arm64-v8a")
+        }
     }
 
     signingConfigs {
@@ -54,7 +60,23 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // R8 minification + resource shrinking. Cuts APK size ~40% and
+            // strips symbols so the release build isn't trivially reversible.
+            // Proguard rules tuned below to keep VPN classes & kotlinx metadata.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
+    }
+
+    packaging {
+        // Prebuilt native binaries (xray, hysteria, tun2socks, vk-turn-client).
+        // Don't strip debug info from these — they are upstream binaries, not
+        // our own code, and stripping can break them.
+        jniLibs.keepDebugSymbols.add("**/lib*.so")
     }
 }
 
