@@ -25,6 +25,31 @@ part 'screens/settings_screen.dart';
 const String _sentryDsn = String.fromEnvironment('SENTRY_DSN', defaultValue: '');
 
 Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Single-instance guard — if another Fogged is already running, kill it
+  // before we proceed. The in-app updater's helper script tries to wait
+  // for the prior PID + pgrep -x Fogged before swapping, but if a tray-
+  // resident or crashed instance hangs around, two Fogged processes both
+  // fight for 127.0.0.1:1080 (sing-box / xray / orcax-connect's SOCKS port)
+  // and FATAL with "bind: address already in use". Self-pid is exempted.
+  if (Platform.isMacOS || Platform.isLinux) {
+    try {
+      final my = pid;
+      final r = await Process.run('pgrep', ['-x', 'Fogged']);
+      final others = (r.stdout as String).split('\n')
+          .map((s) => int.tryParse(s.trim()))
+          .where((p) => p != null && p != my)
+          .map((p) => p!)
+          .toList();
+      for (final p in others) {
+        Process.run('kill', ['-TERM', '$p']);
+      }
+      if (others.isNotEmpty) {
+        // Give the SIGTERMed process(es) up to 1.5s to release ports.
+        await Future.delayed(const Duration(milliseconds: 1500));
+      }
+    } catch (_) {}
+  }
   await SentryFlutter.init(
     (opts) {
       opts.dsn = _sentryDsn;
@@ -193,7 +218,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.7.0'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.7.1'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
