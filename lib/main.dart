@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.18'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.19'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1257,6 +1257,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   String? _connectedServerIp; // for TUN route management
 
   Future<void> _enableVpnRouting(String serverAddr) async {
+    // During the full speed test we DON'T want to flip macOS's system-wide
+    // SOCKS proxy on — every other app (Apple location, Spotify, X.com,
+    // browser) would get pulled into the test's proxy and dilute curl's
+    // throughput measurement (saw `zero_throughput` rows when the test
+    // shared the proxy with system traffic). xray still binds 127.0.0.1:1080
+    // so the speed-test curl can reach it directly.
+    if (_fullTesting) return;
     await _setSystemProxy(true);
   }
 
