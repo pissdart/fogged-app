@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.12'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.13'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1159,10 +1159,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         }
       });
 
-      // For Xray/HY2: they don't emit "connected" — assume ready after 2s
+      // For Xray/HY2: they don't always emit a parseable "connected" line.
+      // Assume ready after 2s if the stdout/stderr keyword listeners haven't
+      // fired by then. The previous `_connecting && mounted` guard skipped
+      // this fallback whenever _startProxy was called outside the normal
+      // toggle path (notably the speed-test loop), leaving HY2 stuck on
+      // "no_listener" since hysteria's output is `INFO client mode` with
+      // ANSI colors that don't match the contains() keywords.
       if (proto != 'orcax') {
         Future.delayed(const Duration(seconds: 2), () async {
-          if (_connecting && mounted) {
+          if (!_connected && mounted) {
             await _enableVpnRouting(_connectedServerIp ?? '');
             _onConnected();
           }
