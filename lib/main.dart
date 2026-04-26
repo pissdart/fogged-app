@@ -168,6 +168,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   // Full speed test suite
   bool _fullTesting = false;
+  /// Set true by the Stop button while a full speed test is running.
+  /// Checked between combos and used as the cancel signal.
+  bool _fullTestCancel = false;
   int _fullTestProgress = 0;
   int _fullTestTotal = 0;
   List<Map<String, dynamic>> _fullTestResults = [];
@@ -218,7 +221,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.7.1'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.7.2'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1701,8 +1704,24 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
               child: Text(L.tr('run_full_test'), style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600))),
           ),
-          if (_fullTesting) Text('${L.tr('testing_progress')} $_fullTestProgress/$_fullTestTotal',
-            style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
+          if (_fullTesting) ...[
+            Text('${L.tr('testing_progress')} $_fullTestProgress/$_fullTestTotal',
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
+            const SizedBox(width: 10),
+            GestureDetector(
+              onTap: () { setState(() => _fullTestCancel = true); _addLog('speed test: cancel requested'); },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.15),
+                  border: Border.all(color: Colors.red.withValues(alpha: 0.4)),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(L.tr('stop'),
+                  style: TextStyle(color: Colors.red.shade300, fontSize: 11, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ],
         ]),
         const SizedBox(height: 16),
 
@@ -1787,10 +1806,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     Expanded(flex: 2, child: Text(
                       r['speed'] != null ? '${(r['speed'] as double).toStringAsFixed(1)} Mbps'
                         : r['status'] == 'testing' ? '...'
+                        : r['status'] == 'cancelled' ? L.tr('cancelled')
                         : failed ? L.tr('failed')
                         : '--',
                       style: TextStyle(
-                        color: r['speed'] != null ? Colors.white : failed ? Colors.red.shade300 : Colors.white30,
+                        color: r['speed'] != null ? Colors.white
+                          : r['status'] == 'cancelled' ? Colors.white.withValues(alpha: 0.4)
+                          : failed ? Colors.red.shade300 : Colors.white30,
                         fontSize: 12, fontWeight: FontWeight.w600),
                       textAlign: TextAlign.right)),
                     const SizedBox(width: 8),
@@ -1883,6 +1905,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     await _disconnect();
     setState(() {
       _fullTesting = true;
+      _fullTestCancel = false;
       _fullTestProgress = 0;
       _fullTestTotal = combos.length;
       _fullTestResults = combos.map((c) => <String, dynamic>{
@@ -1896,6 +1919,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     });
 
     for (int i = 0; i < combos.length; i++) {
+      // Honour the Stop button — break before starting a new combo, mark
+      // any not-yet-run rows as cancelled so the UI shows them clearly
+      // instead of staying on "pending".
+      if (_fullTestCancel) {
+        for (var j = i; j < combos.length; j++) {
+          if (mounted && _fullTestResults[j]['status'] == 'pending') {
+            setState(() => _fullTestResults[j]['status'] = 'cancelled');
+          }
+        }
+        break;
+      }
       setState(() { _fullTestProgress = i + 1; _fullTestResults[i]['status'] = 'testing'; });
 
       final combo = combos[i];
