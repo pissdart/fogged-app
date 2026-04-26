@@ -20,9 +20,6 @@ class _SettingsScreen extends StatefulWidget {
   final ValueChanged<bool> onDomainBypassChanged;
   final List<String> splitDomains;
   final ValueChanged<List<String>> onSplitDomainsChanged;
-  final bool awaitingCaptcha;
-  final bool betaMode;
-  final ValueChanged<bool> onBetaModeChanged;
   /// Re-probe API endpoints + re-fetch the subscription. User-triggered
   /// equivalent of "delete and re-add the profile" from third-party
   /// clients — needed when the cached server list went stale (RKN
@@ -38,9 +35,7 @@ class _SettingsScreen extends StatefulWidget {
     required this.server, required this.mode, required this.onLogout,
     required this.domainBypass, required this.onDomainBypassChanged,
     required this.splitDomains, required this.onSplitDomainsChanged,
-    required this.awaitingCaptcha,
     required this.deviceLimit, required this.devicesUsed, required this.subTier,
-    required this.betaMode, required this.onBetaModeChanged,
     required this.onRefreshSubscription,
   });
 
@@ -264,45 +259,6 @@ Terminal=false
             ]),
           ),
           const SizedBox(height: 20),
-
-          // Experimental / Beta protocols toggle (OrcaX).
-          // Persisted server-side (account.beta_mode) so the subscription
-          // handler on fogged-sub only emits OrcaX URLs to opted-in users.
-          _sectionTitle('Experimental protocols'),
-          Container(
-            decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white.withValues(alpha: 0.08))),
-            child: SwitchListTile(
-              value: widget.betaMode,
-              onChanged: widget.onBetaModeChanged,
-              title: const Text('OrcaX (Beta)', style: TextStyle(color: Colors.white, fontSize: 13)),
-              subtitle: Text('Next-gen protocols under active development. Expect bugs.',
-                  style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 11)),
-              activeColor: Colors.deepPurpleAccent,
-              inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
-            ),
-          ),
-          const SizedBox(height: 20),
-
-          // Captcha banner — surfaces when vk-turn-client needs manual captcha.
-          // Shown regardless of which server the user picked (whitelist servers spawn vk-turn-client).
-          if (widget.awaitingCaptcha && !Platform.isAndroid) ...[
-            Container(
-              margin: const EdgeInsets.only(bottom: 20),
-              decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.orange.withValues(alpha: 0.3))),
-              child: GestureDetector(
-                onTap: () => launchUrl(Uri.parse('http://127.0.0.1:8765'), mode: LaunchMode.externalApplication),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(children: [
-                    Icon(Icons.warning_amber, color: Colors.orange, size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text('VK is asking for a captcha. Tap here to solve in browser.',
-                      style: TextStyle(color: Colors.orange.shade300, fontSize: 12))),
-                  ]),
-                ),
-              ),
-            ),
-          ],
 
           // Split tunnel (custom bypass domains).
           // Desktop only — on Android the per-domain shim isn't bundled

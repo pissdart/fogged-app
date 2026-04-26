@@ -171,7 +171,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   // Blackout Mode: tunnel traffic through VK voice-call TURN server when
   // Russia shuts everything off except VK/Yandex (e.g. drone attacks).
   String _vkCallLink = '';
-  bool _awaitingCaptcha = false;
 
   // Account info (from /account/{uuid})
   String _accountNumber = '';
@@ -184,30 +183,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   int _deviceLimit = 0;
   int? _devicesUsed; // null when server hasn't reported yet
   String _subTier = '';
-  /// Opt-in for experimental protocols (OrcaX Pro Max / OrcaX VLESS).
-  /// Mirrors the account.beta_mode column set via bot `/beta on|off` and via
-  /// the app Settings screen. Controls whether OrcaX appears in the protocol
-  /// dropdown. Default off; prod users on stable VLESS+Reality/HY2 never see
-  /// OrcaX unless they explicitly turn this on.
-  bool _betaMode = false;
 
-  // OrcaX entries deliberately removed from the dropdown for v1.6.1.
-  // The OV test server emits as `vless://` (it's VLESS+Reality at the
-  // wire), and `orcax-connect` isn't bundled for Android, so picking
-  // OrcaX always produced "no servers". Re-add when fogged-sub emits
-  // `orcax://` for OV under beta mode AND orcax-connect ships on every
-  // target platform. The `_parseLine` `orcax://` recogniser stays in
-  // place dormant so a future server-side flip lights it back up.
-  //
-  // Beta toggle still has a real effect: it controls whether the
-  // testing server (`beta_only=true` in DB) appears in the user's sub
-  // URL. Block 4 of v1.6.1 made that gate live.
-  static const _allProtocols = ['VLESS+Reality', 'Hysteria2'];
-  static const _stableProtocols = ['VLESS+Reality', 'Hysteria2'];
-  /// The protocol list exposed to the user. Identical for now whether
-  /// or not beta is on; kept as a getter so re-adding OrcaX later is a
-  /// one-line restore of the `_betaMode ? _allProtocols : ...` ternary.
-  List<String> get _protocols => _betaMode ? _allProtocols : _stableProtocols;
+  static const _protocols = ['VLESS+Reality', 'Hysteria2'];
   static const _apiEndpoints = [
     'https://dl.fogged.net',           // Primary (Cloudflare-fronted)
     'https://fogged-api.anon-dev.workers.dev', // Cloudflare Worker #1
@@ -216,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.1'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.2'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -407,13 +384,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           _deviceLimit = (j['device_limit'] ?? 0).toInt();
           _devicesUsed = j['devices_used'] is int ? j['devices_used'] as int : null;
           _subTier = j['subscription_tier'] ?? '';
-          _betaMode = j['beta_mode'] == true;
-          // If user just turned beta off server-side (via bot) but their saved
-          // protocol was OrcaX, fall back to VLESS+Reality so the dropdown and
-          // selection stay consistent.
-          if (!_betaMode && _protocol.startsWith('OrcaX')) {
-            _protocol = 'VLESS+Reality';
-          }
+          if (_protocol.startsWith('OrcaX')) _protocol = 'VLESS+Reality';
         });
         // Cache server-provisioned VK blackout link (used only when user
         // toggles Blackout Mode — user never sees this value)
@@ -791,11 +762,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   List<VpnServer> get _filteredServers {
-    // Production protocols → production servers from subscription
     if (_protocol == 'VLESS+Reality') return _servers.where((s) => s.protocol == 'vless').toList();
     if (_protocol == 'Hysteria2') return _servers.where((s) => s.protocol == 'hysteria2').toList();
-    // All 3 OrcaX protocols → OrcaX test server only
-    if (_protocol.startsWith('OrcaX')) return _servers.where((s) => s.protocol == 'orcax').toList();
     return _servers.where((s) => s.protocol == 'vless').toList();
   }
 
@@ -999,12 +967,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               lower.contains('fatal error:'))) {
             hadFatalError = true;
             ready.complete(false);
-          }
-          if (lower.contains('action required: manual captcha')) {
-            setState(() => _awaitingCaptcha = true);
-          }
-          if (lower.contains('captcha') && lower.contains('success')) {
-            setState(() => _awaitingCaptcha = false);
           }
         }
         _blackoutProcess!.stdout.transform(utf8.decoder).transform(const LineSplitter())
@@ -1617,34 +1579,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           await _startProxy();
         }
       },
-      awaitingCaptcha: _awaitingCaptcha,
       deviceLimit: _deviceLimit,
       devicesUsed: _devicesUsed,
       subTier: _subTier,
-      betaMode: _betaMode,
-      onBetaModeChanged: (v) async {
-        setState(() {
-          _betaMode = v;
-          // Drop OrcaX selection if user disables beta — dropdown filter
-          // does the right thing on next open, but we also need the current
-          // selection to stay valid.
-          if (!v && _protocol.startsWith('OrcaX')) _protocol = 'VLESS+Reality';
-        });
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('beta_mode', v);
-        // Server-side write so subscription responses honor it.
-        try {
-          await http.post(
-            Uri.parse('$_apiBase/account/$_uuid/settings'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'beta_mode': v}),
-          ).timeout(const Duration(seconds: 5));
-        } catch (_) {
-          // Silent; next account refresh will sync state either way.
-        }
-        // Force a subscription refetch so the new server list appears.
-        unawaited(_fetchSubscription());
-      },
       onRefreshSubscription: () async {
         // User-triggered "I think my servers are stale" — re-probe the
         // API endpoint chain (in case dl.fogged.net is RKN-blocked on
