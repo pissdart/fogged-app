@@ -212,16 +212,28 @@ jobs:
           flutter pub get
           flutter build macos --release
 
-      - name: Download xray + hysteria for macOS
+      - name: Download xray + hysteria + sing-box for macOS
         run: |
-          # Xray v25.3.6 — macOS arm64
-          curl -sL "https://github.com/XTLS/Xray-core/releases/download/v25.3.6/Xray-macos-arm64-v8a.zip" -o /tmp/xray.zip
+          set -euo pipefail
+          # Xray v25.3.6 — macOS arm64 (kept for fallback/rollback path; main
+          # protocol traffic goes through sing-box from v1.7+)
+          curl -sfL "https://github.com/XTLS/Xray-core/releases/download/v25.3.6/Xray-macos-arm64-v8a.zip" -o /tmp/xray.zip
           unzip -o /tmp/xray.zip xray -d /tmp/xray-bin/
-          # Hysteria2 v2.6.1 — macOS arm64
-          curl -sL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.1/hysteria-darwin-arm64" -o /tmp/hysteria
+          # Hysteria2 v2.6.1 — macOS arm64 (kept for rollback)
+          curl -sfL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.6.1/hysteria-darwin-arm64" -o /tmp/hysteria
           # tun2socks v2.5.2 — macOS arm64 (TUN mode for full traffic capture)
-          curl -sL "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-darwin-arm64.zip" -o /tmp/tun2socks.zip
+          curl -sfL "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-darwin-arm64.zip" -o /tmp/tun2socks.zip
           unzip -o /tmp/tun2socks.zip -d /tmp/tun2socks-mac/
+          # sing-box v1.13.11 — both macOS arches (M-series + Intel). This
+          # is the v1.7+ engine for VLESS+Reality and Hysteria2; same binary
+          # Karing/Hiddify/v2raytun embed internally — was the missing piece
+          # explaining "works on mobile, fails in our app".
+          for arch in arm64 amd64; do
+            curl -sfL "https://github.com/SagerNet/sing-box/releases/download/v1.13.11/sing-box-1.13.11-darwin-${arch}.tar.gz" -o /tmp/sb-${arch}.tgz
+            tar -xzf /tmp/sb-${arch}.tgz -C /tmp/
+            cp /tmp/sing-box-1.13.11-darwin-${arch}/sing-box /tmp/sing-box-darwin-${arch}
+            chmod +x /tmp/sing-box-darwin-${arch}
+          done
           chmod +x /tmp/hysteria /tmp/xray-bin/xray /tmp/tun2socks-mac/tun2socks-darwin-arm64
 
       - name: Bundle and create DMG
@@ -232,6 +244,9 @@ jobs:
           cp /tmp/xray-bin/xray "$APP_MACOS/"
           cp /tmp/tun2socks-mac/tun2socks-darwin-arm64 "$APP_MACOS/tun2socks"
           cp /tmp/hysteria "$APP_MACOS/"
+          # sing-box (v1.7+ protocol engine for VLESS+Reality and Hysteria2)
+          cp /tmp/sing-box-darwin-arm64 "$APP_MACOS/"
+          cp /tmp/sing-box-darwin-amd64 "$APP_MACOS/"
           # VK TURN client — both arches; main.dart picks via uname -m at runtime.
           # Missing these in past CI runs shipped a partial ZIP that the in-app
           # updater installed over working installs, breaking xray/hy2 lookups.
@@ -239,8 +254,11 @@ jobs:
           cp orcax/bin/vk-turn-client-darwin-amd64 "$APP_MACOS/"
           chmod +x "$APP_MACOS"/*
           # Hard gate: every expected binary must exist before we zip + deploy.
-          # Mirrors require_bundle in ops/scripts/release.sh.
-          for bin in Fogged orcax-connect xray hysteria tun2socks vk-turn-client-darwin-arm64 vk-turn-client-darwin-amd64; do
+          # Mirrors require_bundle in ops/scripts/release.sh + the in-app
+          # updater's bundle-completeness check at update_dialog.dart.
+          for bin in Fogged orcax-connect xray hysteria tun2socks \
+                     sing-box-darwin-arm64 sing-box-darwin-amd64 \
+                     vk-turn-client-darwin-arm64 vk-turn-client-darwin-amd64; do
             if [ ! -s "$APP_MACOS/$bin" ]; then
               echo "FATAL: macOS bundle missing or empty: $bin"
               ls -la "$APP_MACOS/" || true
@@ -253,11 +271,11 @@ jobs:
           # Post-zip integrity check — entry count must equal the binary count.
           cd "$GITHUB_WORKSPACE"
           BIN_COUNT=$(unzip -l Fogged-macOS.zip | grep "MacOS/" | grep -v '/$' | wc -l | tr -d ' ')
-          if [ "$BIN_COUNT" != "7" ]; then
-            echo "FATAL: ZIP contains $BIN_COUNT MacOS/ binaries, expected 7"
+          if [ "$BIN_COUNT" != "9" ]; then
+            echo "FATAL: ZIP contains $BIN_COUNT MacOS/ binaries, expected 9"
             exit 1
           fi
-          echo "macOS ZIP integrity verified: 7 binaries present"
+          echo "macOS ZIP integrity verified: 9 binaries present"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

@@ -43,6 +43,89 @@ String generateXrayConfig(VpnServer srv, String uuid, int socksPort) {
   });
 }
 
+/// Sing-box config for VLESS+Reality OR Hysteria2 — same engine 3rd-party
+/// mobile clients (Karing, Hiddify, v2raytun) embed and use successfully on
+/// the same RU networks where our previous xray + apernet/hysteria bundle
+/// hit DPI / port-hopping / TLS-pin fence. Single binary handling both
+/// protocols replaces two separate generators (xray JSON, hysteria YAML)
+/// with one JSON schema.
+///
+/// `srv.protocol` is `'vless'` or `'hysteria2'`; we map to the right
+/// outbound type. Single SOCKS5 inbound on `socksPort`.
+String generateSingBoxConfig(VpnServer srv, String uuid, int socksPort, {void Function(String)? onWarning}) {
+  final parts = srv.addr.split(':');
+  final ip = parts[0];
+  final rawPort = parts.length > 1 ? parts[1] : '';
+  // Hy2 URLs may carry a port-range (`38000-43999`); sing-box wants a single
+  // int. Take the first port — sing-box's hysteria2 doesn't port-hop per
+  // packet anyway (matches what worked in v1.6.18 with the apernet binary).
+  final firstPort = rawPort.contains('-') ? rawPort.split('-').first : rawPort;
+
+  Map<String, dynamic> outbound;
+  if (srv.protocol == 'vless') {
+    final pbk = srv.params['pbk'] ?? '';
+    final sid = srv.params['sid'] ?? '';
+    final sni = srv.params['sni'] ?? 'cdn.jsdelivr.net';
+    final fp = srv.params['fp'] ?? 'random';
+    final flowParam = srv.params['flow'];
+    final flow = flowParam ?? 'xtls-rprx-vision';
+    outbound = {
+      'type': 'vless',
+      'tag': 'proxy',
+      'server': ip,
+      'server_port': int.tryParse(firstPort) ?? 8443,
+      'uuid': uuid,
+      // OV/ТЕСТ explicitly empties flow (no Vision); sing-box accepts the
+      // omitted-when-empty pattern just like our v1.6.9 xray fix.
+      if (flow.isNotEmpty) 'flow': flow,
+      'tls': {
+        'enabled': true,
+        'server_name': sni,
+        'reality': {
+          'enabled': true,
+          'public_key': pbk,
+          'short_id': sid,
+        },
+        'utls': {'enabled': true, 'fingerprint': fp},
+      },
+    };
+  } else if (srv.protocol == 'hysteria2') {
+    final obfs = srv.params['obfs-password'] ?? srv.params['obfs'] ?? '';
+    final sni = srv.params['sni'] ?? 'bing.com';
+    if (obfs.isEmpty && onWarning != null) {
+      onWarning('WARNING: no obfs password from server, HY2 may fail');
+    }
+    outbound = {
+      'type': 'hysteria2',
+      'tag': 'proxy',
+      'server': ip,
+      'server_port': int.tryParse(firstPort) ?? 38000,
+      'password': uuid,
+      if (obfs.isNotEmpty) 'obfs': {'type': 'salamander', 'password': obfs},
+      'tls': {
+        'enabled': true,
+        'server_name': sni,
+        'insecure': true,
+      },
+    };
+  } else {
+    throw 'unsupported protocol for sing-box: ${srv.protocol}';
+  }
+
+  return jsonEncode({
+    'log': {'level': 'warn'},
+    'inbounds': [
+      {
+        'type': 'socks',
+        'tag': 'socks-in',
+        'listen': '127.0.0.1',
+        'listen_port': socksPort,
+      }
+    ],
+    'outbounds': [outbound],
+  });
+}
+
 String generateHy2Config(VpnServer srv, String uuid, int socksPort, {void Function(String)? onWarning}) {
   final parts = srv.addr.split(':');
   final ip = parts[0];
@@ -144,6 +227,23 @@ Future<String?> findBinary(String name) async {
 
   for (final p in paths) { if (await File(p).exists()) return p; }
   return null;
+}
+
+/// Find the platform-specific sing-box binary. Bundle ships both macOS
+/// architectures so M1/M2/M3 and Intel Macs both work; CI ships windows
+/// + linux + android variants for those targets.
+Future<String?> findSingBox() async {
+  String name;
+  if (Platform.isMacOS) {
+    name = isArm64() ? 'sing-box-darwin-arm64' : 'sing-box-darwin-amd64';
+  } else if (Platform.isWindows) {
+    name = 'sing-box-windows-amd64.exe';
+  } else if (Platform.isAndroid) {
+    name = 'sing-box-android-arm64';
+  } else {
+    name = 'sing-box-linux-amd64';
+  }
+  return findBinary(name);
 }
 
 /// Find the platform-specific vk-turn-client binary.

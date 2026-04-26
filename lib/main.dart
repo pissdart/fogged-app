@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.19'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.7.0'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1091,27 +1091,27 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         // --whitelist / --whitelist-extra flag names kept for Rust CLI compat.
         if (_domainBypass) args.add('--whitelist');
         if (_splitDomains.isNotEmpty) args.addAll(['--whitelist-extra', _splitDomains.join(',')]);
-      } else if (proto == 'vless') {
-        binary = await findBinary('xray') ?? '';
-        if (binary.isEmpty) { _showError('xray binary not found — check installation'); setState(() => _connecting = false); return; }
-        // For vkturn servers, xray connects to local vk-turn-client instead of the real IP.
+      } else if (proto == 'vless' || proto == 'hysteria2') {
+        // sing-box (single binary handling both VLESS+Reality and Hysteria2)
+        // — the same engine 3rd-party clients (Karing, Hiddify, v2raytun)
+        // embed and use successfully on RU networks where our previous
+        // xray + apernet/hysteria bundle hit DPI / port-hopping / TLS-pin
+        // fences. Replaces two separate spawns with one.
+        binary = await findSingBox() ?? '';
+        if (binary.isEmpty) {
+          _showError('sing-box binary not found — check installation');
+          setState(() => _connecting = false);
+          return;
+        }
+        // For vkturn servers, sing-box connects to local vk-turn-client
+        // instead of the real IP (whitelist-mode VK TURN tunnel).
         final effectiveSrv = isVkTurn
             ? VpnServer(srv.protocol, srv.name, '127.0.0.1:9002', srv.params)
             : srv;
-        final config = generateXrayConfig(effectiveSrv, _uuid, _upstreamSocksPort);
-        final configPath = _tempPath('vless.json');
+        final config = generateSingBoxConfig(effectiveSrv, _uuid, _upstreamSocksPort, onWarning: _addLog);
+        final configPath = _tempPath('singbox.json');
         await File(configPath).writeAsString(config);
-        args = ['run', '-config', configPath];
-      } else if (proto == 'hysteria2') {
-        binary = await findBinary('hysteria') ?? '';
-        if (binary.isEmpty) { _showError('hysteria binary not found — check installation'); setState(() => _connecting = false); return; }
-        final effectiveSrv = isVkTurn
-            ? VpnServer(srv.protocol, srv.name, '127.0.0.1:9002', srv.params)
-            : srv;
-        final config = generateHy2Config(effectiveSrv, _uuid, _upstreamSocksPort, onWarning: _addLog);
-        final configPath = _tempPath('hy2.yaml');
-        await File(configPath).writeAsString(config);
-        args = ['client', '-c', configPath];
+        args = ['run', '-c', configPath];
       } else {
         _showError('Unknown protocol: $proto'); setState(() => _connecting = false); return;
       }

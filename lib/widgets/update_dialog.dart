@@ -252,6 +252,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             // sees same version, no upgrade prompt). Abort cleanly here so
             // their existing install is untouched.
             const required = ['Fogged', 'orcax-connect', 'xray', 'hysteria', 'tun2socks',
+                              'sing-box-darwin-arm64', 'sing-box-darwin-amd64',
                               'vk-turn-client-darwin-arm64', 'vk-turn-client-darwin-amd64'];
             final missing = <String>[];
             for (final bin in required) {
