@@ -226,14 +226,38 @@ jobs:
 
       - name: Bundle and create DMG
         run: |
+          set -euo pipefail
           APP_MACOS="build/macos/Build/Products/Release/Fogged.app/Contents/MacOS"
           cp orcax/target/release/orcax-connect "$APP_MACOS/"
           cp /tmp/xray-bin/xray "$APP_MACOS/"
           cp /tmp/tun2socks-mac/tun2socks-darwin-arm64 "$APP_MACOS/tun2socks"
           cp /tmp/hysteria "$APP_MACOS/"
+          # VK TURN client — both arches; main.dart picks via uname -m at runtime.
+          # Missing these in past CI runs shipped a partial ZIP that the in-app
+          # updater installed over working installs, breaking xray/hy2 lookups.
+          cp orcax/bin/vk-turn-client-darwin-arm64 "$APP_MACOS/"
+          cp orcax/bin/vk-turn-client-darwin-amd64 "$APP_MACOS/"
+          chmod +x "$APP_MACOS"/*
+          # Hard gate: every expected binary must exist before we zip + deploy.
+          # Mirrors require_bundle in ops/scripts/release.sh.
+          for bin in Fogged orcax-connect xray hysteria tun2socks vk-turn-client-darwin-arm64 vk-turn-client-darwin-amd64; do
+            if [ ! -s "$APP_MACOS/$bin" ]; then
+              echo "FATAL: macOS bundle missing or empty: $bin"
+              ls -la "$APP_MACOS/" || true
+              exit 1
+            fi
+          done
           brew install create-dmg
           create-dmg --volname "Fogged VPN" --window-pos 200 120 --window-size 600 400 --icon-size 100 --icon "Fogged.app" 150 190 --app-drop-link 450 190 --hide-extension "Fogged.app" --no-internet-enable Fogged-macOS.dmg "build/macos/Build/Products/Release/Fogged.app"
           cd "build/macos/Build/Products/Release" && zip -r "$GITHUB_WORKSPACE/Fogged-macOS.zip" Fogged.app
+          # Post-zip integrity check — entry count must equal the binary count.
+          cd "$GITHUB_WORKSPACE"
+          BIN_COUNT=$(unzip -l Fogged-macOS.zip | grep "MacOS/" | grep -v '/$' | wc -l | tr -d ' ')
+          if [ "$BIN_COUNT" != "7" ]; then
+            echo "FATAL: ZIP contains $BIN_COUNT MacOS/ binaries, expected 7"
+            exit 1
+          fi
+          echo "macOS ZIP integrity verified: 7 binaries present"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

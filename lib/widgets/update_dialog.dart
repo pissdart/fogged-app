@@ -58,6 +58,55 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   bool _downloading = false;
   double _progress = 0;
   String _status = '';
+  /// Non-empty = the install path failed and we should show the
+  /// Send-to-admin / Close action row instead of the progress UI.
+  /// The string is the machine-readable failure reason (also POSTed
+  /// to the support endpoint when the user taps Send to admin).
+  String _installError = '';
+
+  void _failInstall(String reason) {
+    if (!mounted) return;
+    setState(() {
+      _downloading = false;
+      _installError = reason;
+      _status = reason;
+    });
+  }
+
+  Future<void> _sendInstallErrorToAdmin() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final hostname = await _hostName();
+      final body = StringBuffer()
+        ..writeln('Fogged install failure')
+        ..writeln('app: ${info.version}+${info.buildNumber}')
+        ..writeln('os: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}')
+        ..writeln('device: $hostname')
+        ..writeln('target version: v${widget.version}')
+        ..writeln('---')
+        ..writeln('error: $_installError');
+      // Use the configured API base from prefs (same one main.dart picked).
+      final prefs = await SharedPreferences.getInstance();
+      final apiBase = prefs.getString('api_base') ?? 'https://dl.fogged.net';
+      final uuid = prefs.getString('vless_uuid') ?? '';
+      await http.post(Uri.parse('$apiBase/support/create'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'uuid': uuid, 'message': body.toString()})).timeout(const Duration(seconds: 10));
+      if (mounted) setState(() => _status = 'Report sent.');
+    } catch (e) {
+      if (mounted) setState(() => _status = 'Send failed: $e');
+    }
+  }
+
+  Future<String> _hostName() async {
+    if (Platform.isMacOS) {
+      try {
+        final r = await Process.run('scutil', ['--get', 'ComputerName']);
+        if (r.exitCode == 0) return r.stdout.toString().trim();
+      } catch (_) {}
+    }
+    return Platform.localHostname;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -82,6 +131,31 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 valueColor: AlwaysStoppedAnimation(Colors.white.withValues(alpha: 0.8)), minHeight: 3)),
             const SizedBox(height: 6),
             Text(_status, style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 10)),
+          ] else if (_installError.isNotEmpty) ...[
+            // Install failed — render the failure with a Send-to-admin
+            // button alongside Close so the user can hand us the device +
+            // version + OS context for triage without copying anything.
+            Text(_status, textAlign: TextAlign.center, style: TextStyle(color: Colors.orange.shade300, fontSize: 11, height: 1.4)),
+            const SizedBox(height: 14),
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              GestureDetector(
+                onTap: widget.onLater,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
+                  decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.1)), borderRadius: BorderRadius.circular(8)),
+                  child: Text(L.tr('close'), style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              GestureDetector(
+                onTap: _sendInstallErrorToAdmin,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
+                  decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                  child: Text(L.tr('send_to_admin'), style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ]),
           ] else ...[
             Row(mainAxisAlignment: MainAxisAlignment.center, children: [
               GestureDetector(
@@ -132,8 +206,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       if (widget.expectedHash.isNotEmpty) {
         final digest = sha256.convert(bytes);
         if (digest.toString() != widget.expectedHash) {
-          setState(() { _downloading = false; _status = 'Download corrupted — hash mismatch'; });
-          debugPrint('SHA256 mismatch: expected ${widget.expectedHash}, got $digest');
+          _failInstall('Download corrupted — hash mismatch (expected ${widget.expectedHash.substring(0, 12)}…, got ${digest.toString().substring(0, 12)}…)');
           return;
         }
         debugPrint('SHA256 verified: $digest');
@@ -187,7 +260,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             if (missing.isNotEmpty) {
               try { await File(zipPath).delete(); } catch (_) {}
               try { await Directory(extractDir).delete(recursive: true); } catch (_) {}
-              setState(() => _status = 'Install aborted — bundle missing: ${missing.join(", ")}');
+              _failInstall('Install aborted — bundle missing: ${missing.join(", ")}');
               return;
             }
             // Mark this version as installed so we don't re-prompt on relaunch.
@@ -243,7 +316,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         // Cleanup on failure (couldn't find .app in zip, or unzip failed)
         try { await File(zipPath).delete(); } catch (_) {}
         try { await Directory(extractDir).delete(recursive: true); } catch (_) {}
-        setState(() => _status = 'Install failed — download ok, extraction empty');
+        _failInstall('Install failed — download ok, extraction empty');
       } else if (Platform.isWindows) {
         final exePath = '${Platform.environment['TEMP']}\\Fogged-Setup.exe';
         await File(exePath).writeAsBytes(bytes);
@@ -269,7 +342,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         await channel.invokeMethod('installApk', apkPath);
       }
     } catch (e) {
-      setState(() { _downloading = false; _status = 'Error: $e'; });
+      _failInstall('Install error: $e');
     }
   }
 }
