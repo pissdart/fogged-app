@@ -82,7 +82,10 @@ impl MuxPool {
 
         // Round-robin: pick connection based on stream_id
         let link_idx = (sid as usize / 2) % self.links.len();
-        let frame = orcax_protocol::orca::Frame::stream_open(sid, target).encode();
+        // Pad 4-128 bytes so the StreamOpen frame length varies even for
+        // connections to similar-length targets; makes it harder to correlate
+        // "user opened a stream to google.com" from observed packet size.
+        let frame = orcax_protocol::orca::Frame::stream_open(sid, target).with_padding(4, 128).encode();
         self.links[link_idx].write_tx.send(frame).await.map_err(|_| anyhow!("write closed"))?;
 
         Ok((sid, StreamHandle { rx }))
@@ -95,7 +98,7 @@ impl MuxPool {
     }
 
     async fn close_stream(&self, stream_id: u32) {
-        let frame = orcax_protocol::orca::Frame::stream_close(stream_id).encode();
+        let frame = orcax_protocol::orca::Frame::stream_close(stream_id).with_padding(4, 64).encode();
         let _ = self.link_for(stream_id).write_tx.send(frame).await;
         self.streams.lock().await.remove(&stream_id);
     }
@@ -195,6 +198,16 @@ async fn socks5_auth(c: &mut TcpStream, token: &str) -> Result<()> {
 
 #[tokio::main]
 async fn main() {
+    // Install a process-global rustls CryptoProvider BEFORE any rustls client
+    // is constructed. The CDN WebSocket fallback path uses rustls-pki directly
+    // (not through quinn) and rustls 0.23 requires you to either (a) enable
+    // exactly one of the aws-lc-rs/ring features, or (b) install_default()
+    // explicitly. We pick aws-lc-rs for parity with the QUIC path so both
+    // transports use the same crypto backend and have the same fingerprint.
+    // Without this the WS fallback panics at runtime when the connection is
+    // actually attempted — visible to the user as "thread 'main' panicked".
+    let _ = quinn::rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let args: Vec<String> = std::env::args().collect();
     let mut sa = arg(&args, "--server").unwrap_or("204.168.171.253:9444".into());
     let sk = arg(&args, "--socks").unwrap_or("127.0.0.1:1080".into());
@@ -341,7 +354,7 @@ async fn main() {
                         if let Some(tx) = map.get(&stream_id) { let _ = tx.send(payload).await; }
                     }
                     0x02 => { streams2.lock().await.remove(&stream_id); }
-                    0x03 => { let _ = write_tx2.send(orcax_protocol::orca::Frame::pong().encode()).await; }
+                    0x03 => { let _ = write_tx2.send(orcax_protocol::orca::Frame::pong().with_padding(4, 64).encode()).await; }
                     _ => {}
                 }
             }

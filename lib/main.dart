@@ -13,6 +13,12 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 import 'l10n/strings.dart';
 import 'models/vpn_server.dart';
+import 'services/vpn_config.dart';
+
+part 'widgets/update_dialog.dart';
+part 'widgets/error_dialog.dart';
+part 'widgets/grid_painter.dart';
+part 'screens/settings_screen.dart';
 
 // Sentry DSN — baked in at build time via --dart-define=SENTRY_DSN=... .
 // Leave empty for local/debug builds; Sentry auto-disables when DSN is empty.
@@ -121,9 +127,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   String _uptime = '--';
   String _downloaded = '0 B';
   Process? _proxyProcess;
-  Process? _shimProcess; // whitelist shim (orcax-connect --upstream-socks) for xray/hy2
+  Process? _shimProcess; // domain-bypass shim (orcax-connect --upstream-socks) for xray/hy2
   Process? _blackoutProcess; // vk-turn-client subprocess (VK TURN fallback)
-  Process? _tun2socksProcess;
   late AnimationController _pulseController;
 
   // Platform channel for tray/menu bar
@@ -147,7 +152,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   List<Map<String, dynamic>> _siteResults = [];
 
   // SNI test
-  bool _testingSni = false;
   List<Map<String, dynamic>> _sniResults = [];
 
   // Split tunnel custom domains
@@ -157,12 +161,15 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   final List<String> _debugLogs = [];
   final _debugScroll = ScrollController();
 
-  // Whitelist mode (Russian whitelisted domains bypass VPN)
-  bool _whitelistMode = false;
+  // Domain-bypass mode: Russian banking/gov/social apps go direct instead of
+  // tunneling through the foreign VPN exit (avoids their foreign-IP checks).
+  // Name NOT to be confused with the VK TURN "whitelist" server archetype —
+  // that one's triggered by transport=vkturn on the selected server, not by
+  // this flag. See ops/runbooks/protocols.md for the server archetypes.
+  bool _domainBypass = false;
 
   // Blackout Mode: tunnel traffic through VK voice-call TURN server when
   // Russia shuts everything off except VK/Yandex (e.g. drone attacks).
-  bool _blackoutMode = false;
   String _vkCallLink = '';
   bool _awaitingCaptcha = false;
 
@@ -177,8 +184,30 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   int _deviceLimit = 0;
   int? _devicesUsed; // null when server hasn't reported yet
   String _subTier = '';
+  /// Opt-in for experimental protocols (OrcaX Pro Max / OrcaX VLESS).
+  /// Mirrors the account.beta_mode column set via bot `/beta on|off` and via
+  /// the app Settings screen. Controls whether OrcaX appears in the protocol
+  /// dropdown. Default off; prod users on stable VLESS+Reality/HY2 never see
+  /// OrcaX unless they explicitly turn this on.
+  bool _betaMode = false;
 
-  static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max', 'OrcaX VLESS'];
+  // OrcaX entries deliberately removed from the dropdown for v1.6.1.
+  // The OV test server emits as `vless://` (it's VLESS+Reality at the
+  // wire), and `orcax-connect` isn't bundled for Android, so picking
+  // OrcaX always produced "no servers". Re-add when fogged-sub emits
+  // `orcax://` for OV under beta mode AND orcax-connect ships on every
+  // target platform. The `_parseLine` `orcax://` recogniser stays in
+  // place dormant so a future server-side flip lights it back up.
+  //
+  // Beta toggle still has a real effect: it controls whether the
+  // testing server (`beta_only=true` in DB) appears in the user's sub
+  // URL. Block 4 of v1.6.1 made that gate live.
+  static const _allProtocols = ['VLESS+Reality', 'Hysteria2'];
+  static const _stableProtocols = ['VLESS+Reality', 'Hysteria2'];
+  /// The protocol list exposed to the user. Identical for now whether
+  /// or not beta is on; kept as a getter so re-adding OrcaX later is a
+  /// one-line restore of the `_betaMode ? _allProtocols : ...` ternary.
+  List<String> get _protocols => _betaMode ? _allProtocols : _stableProtocols;
   static const _apiEndpoints = [
     'https://dl.fogged.net',           // Primary (Cloudflare-fronted)
     'https://fogged-api.anon-dev.workers.dev', // Cloudflare Worker #1
@@ -187,9 +216,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  bool _usingFallbackApi = false;
-  bool _usingCachedServers = false;
-  String _appVersion = '1.6.0'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.1'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -225,7 +252,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         await http.get(Uri.parse('${_apiEndpoints[i]}/health')).timeout(const Duration(seconds: 3));
         _apiBase = _apiEndpoints[i];
         _apiEndpointIndex = i;
-        _usingFallbackApi = i > 0;
         if (i > 0) debugPrint('Using fallback API #$i: ${_apiEndpoints[i]}');
         _loadAuth();
         return;
@@ -241,7 +267,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     debugPrint('All API endpoints unreachable — entering cached-only mode');
     _apiBase = _apiEndpoints[0]; // nominal primary; will be overwritten on recovery
     _apiEndpointIndex = 0;
-    _usingFallbackApi = true;
     _addLog('Offline: using cached servers. Will auto-reconnect when network returns.');
     _loadAuth();
     _startBackgroundApiRecovery();
@@ -261,7 +286,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           await http.get(Uri.parse('${_apiEndpoints[i]}/health')).timeout(const Duration(seconds: 3));
           _apiBase = _apiEndpoints[i];
           _apiEndpointIndex = i;
-          _usingFallbackApi = i > 0;
           _addLog('API reachable again: ${_apiEndpoints[i]}');
           t.cancel();
           _apiRecoveryTimer = null;
@@ -282,7 +306,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         await http.get(Uri.parse('${_apiEndpoints[idx]}/health')).timeout(const Duration(seconds: 3));
         _apiBase = _apiEndpoints[idx];
         _apiEndpointIndex = idx;
-        _usingFallbackApi = idx > 0;
         debugPrint('Cycled to API endpoint #$idx: ${_apiEndpoints[idx]}');
         return true;
       } catch (_) {}
@@ -314,9 +337,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       return;
     }
     L.setLang(['ru', 'zh'].contains(lang) ? lang : 'en');
-    _whitelistMode = prefs.getBool('whitelist_mode') ?? false;
+    _domainBypass = prefs.getBool('whitelist_mode') ?? false;
     _splitDomains = prefs.getStringList('split_domains') ?? [];
-    _blackoutMode = prefs.getBool('blackout_mode') ?? false;
     _vkCallLink = await _secRead('vk_call_link') ?? '';
     // Restore last used protocol/server/mode
     final savedProtocol = prefs.getString('last_protocol');
@@ -332,12 +354,28 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         _server = savedServer;
       }
       await _fetchAccountInfo();
-      // Auto-connect if user was connected last session or has auto-start enabled
+      // Auto-connect if user was connected last session or has auto-start enabled.
+      //
+      // Important guard: if the cached `_server` is a vk-turn (whitelist)
+      // entry, DON'T silently auto-connect. vk-turn requires the user to
+      // solve a VK captcha in their browser every session, and silently
+      // launching it on app-open looked to support like the app was
+      // randomly opening a captcha URL. Forcing the user to tap Connect
+      // when on a vk-turn server keeps captcha-popup tied to a user gesture.
       final wasConnected = prefs.getBool('was_connected') ?? false;
       final autoStart = prefs.getBool('auto_start') ?? false;
       if ((wasConnected || autoStart) && _filteredServers.isNotEmpty) {
-        setState(() => _connecting = true);
-        _startProxy();
+        final selected = _filteredServers.firstWhere(
+          (s) => s.name == _server,
+          orElse: () => _filteredServers.first,
+        );
+        final isVkTurn = selected.params['transport'] == 'vkturn';
+        if (isVkTurn) {
+          _addLog('skipping auto-connect: last server uses vk-turn (captcha required)');
+        } else {
+          setState(() => _connecting = true);
+          _startProxy();
+        }
       }
       // Background refresh: re-fetch subscription every 5 minutes
       _startSubscriptionRefresh();
@@ -369,6 +407,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           _deviceLimit = (j['device_limit'] ?? 0).toInt();
           _devicesUsed = j['devices_used'] is int ? j['devices_used'] as int : null;
           _subTier = j['subscription_tier'] ?? '';
+          _betaMode = j['beta_mode'] == true;
+          // If user just turned beta off server-side (via bot) but their saved
+          // protocol was OrcaX, fall back to VLESS+Reality so the dropdown and
+          // selection stay consistent.
+          if (!_betaMode && _protocol.startsWith('OrcaX')) {
+            _protocol = 'VLESS+Reality';
+          }
         });
         // Cache server-provisioned VK blackout link (used only when user
         // toggles Blackout Mode — user never sees this value)
@@ -382,7 +427,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         if (settings is Map) {
           final prefs = await SharedPreferences.getInstance();
           if (settings['whitelist_mode'] != null && !prefs.containsKey('whitelist_mode')) {
-            _whitelistMode = settings['whitelist_mode'] == true;
+            _domainBypass = settings['whitelist_mode'] == true;
           }
           if (settings['split_domains'] is List && !prefs.containsKey('split_domains')) {
             _splitDomains = (settings['split_domains'] as List).cast<String>();
@@ -409,7 +454,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       await http.post(Uri.parse('$_apiBase/account/$_uuid/settings'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'whitelist_mode': _whitelistMode,
+          'whitelist_mode': _domainBypass,
           'split_domains': _splitDomains,
           'protocol': _protocol,
           'server': _server,
@@ -614,12 +659,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         final cached = await _loadCachedServers();
         if (cached.isNotEmpty) {
           _addLog('loaded ${cached.length} servers from cache');
-          _usingCachedServers = true;
           servers.addAll(cached);
         }
       }
       if (servers.isNotEmpty) _cacheServers(servers);
-      _usingCachedServers = false;
       setState(() { _servers = servers; if (servers.isNotEmpty) _server = _filteredServers.isNotEmpty ? _filteredServers.first.name : servers.first.name; });
     } catch (e) {
       debugPrint('Sub fetch failed: $e');
@@ -810,9 +853,20 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Future<void> _startProxy() async {
     try {
       if (_filteredServers.isEmpty) {
-        _showError('No servers available for $_protocol');
-        setState(() => _connecting = false);
-        return;
+        // Empty server list almost always means the subscription fetch
+        // failed (RKN routing of Cloudflare, transient API hiccup, or
+        // app launched from cold offline). Try the recovery path
+        // automatically once before bothering the user — re-probe API
+        // endpoints + re-fetch — and retry the connect transparently.
+        _addLog('empty server list — auto-refreshing before connect');
+        await _probeApiAndLoad();
+        if (_uuid.isNotEmpty) await _fetchSubscription();
+        if (_filteredServers.isEmpty) {
+          _showError('No servers available for $_protocol — tap the refresh icon in Settings, or check your connection.');
+          setState(() => _connecting = false);
+          return;
+        }
+        // Servers came back; fall through to the normal connect path.
       }
       final srv = _filteredServers.firstWhere((s) => s.name == _server, orElse: () => _filteredServers.first);
       var proto = srv.protocol;
@@ -842,10 +896,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         String androidConfig = '';
         if (proto == 'vless') {
           androidProto = 'xray';
-          androidConfig = _generateXrayConfig(effectiveSrv, _uuid);
+          androidConfig = generateXrayConfig(effectiveSrv, _uuid, _upstreamSocksPort);
         } else if (proto == 'hysteria2') {
           androidProto = 'hysteria';
-          androidConfig = _generateHy2Config(effectiveSrv, _uuid);
+          androidConfig = generateHy2Config(effectiveSrv, _uuid, _upstreamSocksPort, onWarning: _addLog);
         } else {
           androidProto = _protocol == 'OrcaX Pro Max' ? 'quic' : 'tcp';
         }
@@ -860,10 +914,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           'vkCallLink': isVkTurn ? _vkCallLink : '',
           'vkPeer': isVkTurn ? srv.addr : '',
           'vkIsVless': isVkTurn && proto == 'vless',
-          // Whitelist mode — FoggedVpnService applies addDisallowedApplication
+          // Domain-bypass flag — FoggedVpnService applies addDisallowedApplication
           // to a hardcoded list of RU banking/gosuslugi/social apps so they
-          // bypass the VPN and see the phone's real Russian IP.
-          'whitelistMode': _whitelistMode,
+          // bypass the VPN and see the phone's real Russian IP. Platform-channel
+          // arg name stays 'whitelistMode' for Android-side back-compat.
+          'whitelistMode': _domainBypass,
         });
         if (result == true) {
           setState(() { _connected = true; _connecting = false; _uptime = '0:00'; }); _trayChannel.invokeMethod('setConnected', true); SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
@@ -878,7 +933,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       String binary;
       List<String> args;
 
-      final whitelistActive = _whitelistMode || _splitDomains.isNotEmpty;
+      final domainBypassActive = _domainBypass || _splitDomains.isNotEmpty;
 
       // VK TURN chaining: if the selected server has transport=vkturn, spawn
       // vk-turn-client to tunnel traffic through VK voice-call infrastructure.
@@ -895,7 +950,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           setState(() => _connecting = false);
           return;
         }
-        final vkBin = await _findVkTurnClient();
+        final vkBin = await findVkTurnClient();
         if (vkBin == null) {
           _showError('vk-turn-client binary missing from app bundle');
           setState(() => _connecting = false);
@@ -991,39 +1046,61 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       }
 
       if (proto == 'orcax') {
-        binary = await _findBinary('orcax-connect') ?? '';
+        binary = await findBinary('orcax-connect') ?? '';
         if (binary.isEmpty) { _showError('orcax-connect not found'); setState(() => _connecting = false); return; }
         // Pro Max = QUIC on port 9444, VLESS/HY2 = TCP on tcp_port (9446)
         // Pro Max + OrcaX HY2 → QUIC port 9444, OrcaX VLESS → TCP port 9446
         final useQuic = _protocol == 'OrcaX Pro Max' || _protocol == 'OrcaX Hysteria2';
         final serverAddr = useQuic ? srv.addr : srv.addr.replaceAll(':9444', ':${srv.params['tcp_port'] ?? '9446'}');
         args = ['--server', serverAddr, '--socks', '127.0.0.1:1080', '--uuid', _uuid];
+        // Forward the subscription's `pubkey=` query param into the
+        // Rust CLI. Before 2026-04-22 this was ignored by orcax-connect
+        // (it used a hardcoded key derived from the server's PRIVATE key
+        // — see git history for context). Passing the subscription pubkey
+        // means server Reality-key rotation is now a runtime-refresh
+        // operation, not a rebuild-and-ship-app operation.
+        final pubkey = srv.params['pubkey'];
+        if (pubkey != null && pubkey.isNotEmpty) {
+          args.addAll(['--pubkey', pubkey]);
+        }
+        // Forward the SNI pool if the subscription carries it. Schema
+        // today is implicit (SNIs rotate per-URL via fogged-sub's
+        // CLIENT_SNI_POOL), so this arg is usually empty and the CLI
+        // falls back to its hardcoded default. When fogged-sub starts
+        // emitting `sni_pool=a,b,c,...` as a query param (P1.4
+        // follow-up), the CLI will pick it up automatically via this.
+        final sniPool = srv.params['sni_pool'];
+        if (sniPool != null && sniPool.isNotEmpty) {
+          args.addAll(['--sni-pool', sniPool]);
+        }
         if (_protocol == 'OrcaX Pro Max' || _protocol == 'OrcaX Hysteria2') {
           args.addAll(['--protocol', 'quic']);
           // v4: CDN fallback URL for when QUIC is blocked (Kazakhstan, etc.)
           args.addAll(['--cdn-url', 'wss://tunnel.fogged.net']);
         }
-        // Whitelist (split tunnel) — handled inline in orcax-connect
-        if (_whitelistMode) args.add('--whitelist');
+        // Domain bypass (orcax-connect routes the hardcoded Russian-app list
+        // + user's split_domains direct, rest through the tunnel).
+        // --whitelist / --whitelist-extra flag names kept for Rust CLI compat.
+        if (_domainBypass) args.add('--whitelist');
         if (_splitDomains.isNotEmpty) args.addAll(['--whitelist-extra', _splitDomains.join(',')]);
       } else if (proto == 'vless') {
-        binary = await _findBinary('xray') ?? '';
+        binary = await findBinary('xray') ?? '';
         if (binary.isEmpty) { _showError('xray binary not found — check installation'); setState(() => _connecting = false); return; }
         // For vkturn servers, xray connects to local vk-turn-client instead of the real IP.
         final effectiveSrv = isVkTurn
             ? VpnServer(srv.protocol, srv.name, '127.0.0.1:9002', srv.params)
             : srv;
-        final config = _generateXrayConfig(effectiveSrv, _uuid);
+        final config = generateXrayConfig(effectiveSrv, _uuid, _upstreamSocksPort);
         final configPath = _tempPath('vless.json');
         await File(configPath).writeAsString(config);
         args = ['run', '-config', configPath];
       } else if (proto == 'hysteria2') {
-        binary = await _findBinary('hysteria') ?? '';
+        binary = await findBinary('hysteria') ?? '';
         if (binary.isEmpty) { _showError('hysteria binary not found — check installation'); setState(() => _connecting = false); return; }
         final effectiveSrv = isVkTurn
             ? VpnServer(srv.protocol, srv.name, '127.0.0.1:9002', srv.params)
             : srv;
-        final config = _generateHy2Config(effectiveSrv, _uuid);
+        final config = generateHy2Config(effectiveSrv, _uuid, _upstreamSocksPort, onWarning: _addLog);
         final configPath = _tempPath('hy2.yaml');
         await File(configPath).writeAsString(config);
         args = ['client', '-c', configPath];
@@ -1031,18 +1108,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         _showError('Unknown protocol: $proto'); setState(() => _connecting = false); return;
       }
 
-      // For xray/hy2 with whitelist on: spawn orcax-connect as a SOCKS5 front-end.
-      // xray/hy2 listen on 1081, shim on 1080 does whitelist routing.
-      if (whitelistActive && proto != 'orcax') {
-        final shimBin = await _findBinary('orcax-connect') ?? '';
+      // For xray/hy2 with domain bypass on: spawn orcax-connect as a SOCKS5
+      // front-end. xray/hy2 listen on 1081, the shim on 1080 decides per-
+      // connection whether to tunnel or bypass.
+      if (domainBypassActive && proto != 'orcax') {
+        final shimBin = await findBinary('orcax-connect') ?? '';
         if (shimBin.isEmpty) {
-          _addLog('WARN: orcax-connect not found — whitelist will not work');
+          _addLog('WARN: orcax-connect not found — domain bypass will not work');
         } else {
           final shimArgs = <String>[
             '--socks', '127.0.0.1:1080',
             '--upstream-socks', '127.0.0.1:1081',
           ];
-          if (_whitelistMode) shimArgs.add('--whitelist');
+          if (_domainBypass) shimArgs.add('--whitelist');
           if (_splitDomains.isNotEmpty) shimArgs.addAll(['--whitelist-extra', _splitDomains.join(',')]);
           _addLog('launching whitelist shim (127.0.0.1:1080 → 1081)');
           _shimProcess = await Process.start(shimBin, shimArgs);
@@ -1147,116 +1225,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   /// Listen port for xray/hy2. When whitelist mode is on, they listen on 1081
   /// and the orcax-connect shim on 1080 forwards non-whitelisted traffic here.
-  int get _upstreamSocksPort => (_whitelistMode || _splitDomains.isNotEmpty) ? 1081 : 1080;
-
-  String _generateXrayConfig(VpnServer srv, String uuid) {
-    final parts = srv.addr.split(':');
-    final ip = parts[0];
-    final port = parts.length > 1 ? parts[1] : '8443';
-    final pbk = srv.params['pbk'] ?? '';
-    final sid = srv.params['sid'] ?? '';
-    final sni = srv.params['sni'] ?? 'cdn.jsdelivr.net';
-    final flow = srv.params['flow'] ?? 'xtls-rprx-vision';
-    final fp = srv.params['fp'] ?? 'random';
-    return jsonEncode({
-      "log": {"loglevel": "warning"},
-      "inbounds": [{"tag": "socks", "protocol": "socks", "listen": "127.0.0.1", "port": _upstreamSocksPort,
-        "settings": {"auth": "noauth", "udp": true}}],
-      "outbounds": [{"tag": "proxy", "protocol": "vless", "settings": {
-        "vnext": [{"address": ip, "port": int.tryParse(port) ?? 8443,
-          "users": [{"id": uuid, "encryption": "none", "flow": flow}]}]},
-        "streamSettings": {"network": "tcp", "security": "reality",
-          "realitySettings": {"serverName": sni, "fingerprint": fp,
-            "publicKey": pbk, "shortId": sid}}}]
-    });
-  }
-
-  String _generateHy2Config(VpnServer srv, String uuid) {
-    final parts = srv.addr.split(':');
-    final ip = parts[0];
-    final port = parts.length > 1 ? parts[1] : '20000-50000';
-    final obfs = srv.params['obfs-password'] ?? srv.params['obfs'] ?? '';
-    if (obfs.isEmpty) { _addLog('WARNING: no obfs password from server, HY2 may fail'); }
-    return '''
-server: $ip:$port
-auth: $uuid
-obfs:
-  type: salamander
-  salamander:
-    password: $obfs
-socks5:
-  listen: 127.0.0.1:$_upstreamSocksPort
-tls:
-  insecure: true
-''';
-  }
-
-  // ── Binary finder ──
-
-  Future<String?> _findBinary(String name) async {
-    final ext = Platform.isWindows ? '.exe' : '';
-    final binName = '$name$ext';
-
-    // App bundle directory (where the executable lives)
-    final appDir = File(Platform.resolvedExecutable).parent.path;
-
-    final paths = <String>[];
-    if (Platform.isWindows) {
-      paths.addAll([
-        '$appDir\\$binName',                                          // next to app exe
-        '$appDir\\bin\\$binName',                                     // app/bin/
-        '${Platform.environment['LOCALAPPDATA']}\\Fogged\\bin\\$binName',
-        '${Directory.current.path}\\$binName',
-        'C:\\Program Files\\Fogged\\$binName',
-      ]);
-    } else if (Platform.isMacOS) {
-      // Inside .app bundle: Fogged.app/Contents/MacOS/
-      paths.addAll([
-        '$appDir/$binName',                                           // next to app exe in bundle
-        '${File(Platform.resolvedExecutable).parent.parent.path}/Resources/$binName', // .app/Contents/Resources/
-        '/usr/local/bin/$binName',
-      ]);
-    } else {
-      paths.addAll([
-        '$appDir/$binName',
-        '/usr/local/bin/$binName',
-      ]);
-    }
-
-    // Dev paths (only check if running from source tree)
-    if (appDir.contains('CascadeProjects') || appDir.contains('flutter')) {
-      paths.addAll([
-        '${Directory.current.path}/orcax/bin/$binName',
-        '${Directory.current.path}/orcax/target/release/$binName',
-        '${Directory.current.path}/orcax/target/debug/$binName',
-      ]);
-    }
-
-    for (final p in paths) { if (await File(p).exists()) return p; }
-    return null;
-  }
-
-  /// Find the platform-specific vk-turn-client binary.
-  /// We ship 5 variants: darwin-arm64, darwin-amd64, linux-amd64,
-  /// windows-amd64.exe, android-arm64.
-  Future<String?> _findVkTurnClient() async {
-    String name;
-    if (Platform.isMacOS) {
-      name = _isArm64() ? 'vk-turn-client-darwin-arm64' : 'vk-turn-client-darwin-amd64';
-    } else if (Platform.isWindows) {
-      name = 'vk-turn-client-windows-amd64.exe';
-    } else if (Platform.isAndroid) {
-      name = 'vk-turn-client-android-arm64';
-    } else {
-      name = 'vk-turn-client-linux-amd64';
-    }
-    return _findBinary(name);
-  }
-
-  bool _isArm64() {
-    final r = Process.runSync('uname', ['-m']);
-    return r.stdout.toString().trim() == 'arm64';
-  }
+  int get _upstreamSocksPort => (_domainBypass || _splitDomains.isNotEmpty) ? 1081 : 1080;
 
   // ── System proxy ──
   // Whitelist/split-tunneling lives in orcax-connect (Rust). The app just
@@ -1622,12 +1591,15 @@ tls:
       daysLeft: _daysLeft, referralCode: _referralCode, referralEarnings: _referralEarnings,
       totalReferrals: _totalReferrals, userRole: _userRole, uuid: _uuid,
       apiBase: _apiBase, debugLogs: _debugLogs, protocol: _protocol, server: _server,
-      mode: _mode, onLogout: _logout, whitelistMode: _whitelistMode,
-      onWhitelistChanged: (v) async {
-        setState(() => _whitelistMode = v);
+      mode: _mode, onLogout: _logout, domainBypass: _domainBypass,
+      onDomainBypassChanged: (v) async {
+        setState(() => _domainBypass = v);
         final prefs = await SharedPreferences.getInstance();
+        // Pref key stays 'whitelist_mode' for back-compat with existing users
+        // and with the cloud-settings JSON schema.
         await prefs.setBool('whitelist_mode', v);
-        // Whitelist is baked into orcax-connect args at launch — need to reconnect
+        // The --whitelist flag is baked into orcax-connect args at launch,
+        // so a toggle change while connected needs a quick reconnect.
         if (_connected) {
           await _disconnect();
           await Future.delayed(const Duration(milliseconds: 300));
@@ -1649,6 +1621,40 @@ tls:
       deviceLimit: _deviceLimit,
       devicesUsed: _devicesUsed,
       subTier: _subTier,
+      betaMode: _betaMode,
+      onBetaModeChanged: (v) async {
+        setState(() {
+          _betaMode = v;
+          // Drop OrcaX selection if user disables beta — dropdown filter
+          // does the right thing on next open, but we also need the current
+          // selection to stay valid.
+          if (!v && _protocol.startsWith('OrcaX')) _protocol = 'VLESS+Reality';
+        });
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('beta_mode', v);
+        // Server-side write so subscription responses honor it.
+        try {
+          await http.post(
+            Uri.parse('$_apiBase/account/$_uuid/settings'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'beta_mode': v}),
+          ).timeout(const Duration(seconds: 5));
+        } catch (_) {
+          // Silent; next account refresh will sync state either way.
+        }
+        // Force a subscription refetch so the new server list appears.
+        unawaited(_fetchSubscription());
+      },
+      onRefreshSubscription: () async {
+        // User-triggered "I think my servers are stale" — re-probe the
+        // API endpoint chain (in case dl.fogged.net is RKN-blocked on
+        // their carrier and a fallback worker is up) and re-fetch the
+        // server list. Replaces the "delete and re-add the profile"
+        // workaround that doesn't apply to an integrated app.
+        _addLog('manual subscription refresh triggered');
+        await _probeApiAndLoad();
+        if (_uuid.isNotEmpty) await _fetchSubscription();
+      },
     );
   }
 
@@ -1852,7 +1858,7 @@ tls:
   }
 
   Future<void> _runSniTest() async {
-    setState(() { _testingSni = true; _sniResults = []; });
+    setState(() { _sniResults = []; });
     try {
       // Fetch SNI list from API
       final resp = await http.get(Uri.parse('$_apiBase/sni/list')).timeout(const Duration(seconds: 10));
@@ -1881,7 +1887,6 @@ tls:
         }
       }
     } catch (_) {}
-    setState(() => _testingSni = false);
     // Report SNI results to backend
     try {
       await http.post(Uri.parse('$_apiBase/sni/report'),
@@ -2175,786 +2180,4 @@ tls:
   }
 
 
-}
-
-// ── In-App Update Dialog (Surfshark-style) ──
-
-class _UpdateDialog extends StatefulWidget {
-  final String version, notes, downloadUrl, expectedHash;
-  final VoidCallback onSkip, onLater;
-  const _UpdateDialog({required this.version, required this.notes, required this.downloadUrl, this.expectedHash = '', required this.onSkip, required this.onLater});
-
-  @override
-  State<_UpdateDialog> createState() => _UpdateDialogState();
-}
-
-class _UpdateDialogState extends State<_UpdateDialog> {
-  bool _downloading = false;
-  double _progress = 0;
-  String _status = '';
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: const Color(0xFF0A0A0A),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
-      child: Container(
-        width: 340, padding: const EdgeInsets.all(20),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Image.asset('assets/logo.png', width: 36, height: 36),
-          const SizedBox(height: 10),
-          Text('v${widget.version}', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: 2)),
-          if (widget.notes.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(widget.notes, textAlign: TextAlign.center, style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 11, height: 1.4)),
-          ],
-          const SizedBox(height: 16),
-
-          if (_downloading) ...[
-            ClipRRect(borderRadius: BorderRadius.circular(2),
-              child: LinearProgressIndicator(value: _progress, backgroundColor: Colors.white.withValues(alpha: 0.06),
-                valueColor: AlwaysStoppedAnimation(Colors.white.withValues(alpha: 0.8)), minHeight: 3)),
-            const SizedBox(height: 6),
-            Text(_status, style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 10)),
-          ] else ...[
-            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              GestureDetector(
-                onTap: widget.onLater,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
-                  decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.1)), borderRadius: BorderRadius.circular(8)),
-                  child: Text('Later', style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
-                ),
-              ),
-              const SizedBox(width: 10),
-              GestureDetector(
-                onTap: _installUpdate,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
-                  decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-                  child: const Text('Update', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
-                ),
-              ),
-            ]),
-          ],
-        ]),
-      ),
-    );
-  }
-
-  Future<void> _installUpdate() async {
-    setState(() { _downloading = true; _status = 'Downloading...'; _progress = 0; });
-
-    try {
-      final request = http.Request('GET', Uri.parse(widget.downloadUrl));
-      final response = await request.send();
-      final totalBytes = response.contentLength ?? 0;
-      var receivedBytes = 0;
-      final chunks = <List<int>>[];
-
-      await for (final chunk in response.stream) {
-        chunks.add(chunk);
-        receivedBytes += chunk.length;
-        if (totalBytes > 0) {
-          setState(() { _progress = receivedBytes / totalBytes; _status = '${(receivedBytes / 1048576).toStringAsFixed(1)} / ${(totalBytes / 1048576).toStringAsFixed(1)} MB'; });
-        }
-      }
-
-      final bytes = chunks.expand((c) => c).toList();
-
-      // Verify SHA256 hash if server provided one
-      if (widget.expectedHash.isNotEmpty) {
-        final digest = sha256.convert(bytes);
-        if (digest.toString() != widget.expectedHash) {
-          setState(() { _downloading = false; _status = 'Download corrupted — hash mismatch'; });
-          debugPrint('SHA256 mismatch: expected ${widget.expectedHash}, got $digest');
-          return;
-        }
-        debugPrint('SHA256 verified: $digest');
-      }
-
-      setState(() { _status = 'Installing...'; _progress = 1.0; });
-
-      if (Platform.isMacOS) {
-        // Save ZIP → extract → hand the new .app off to a detached helper
-        // script that (1) waits for US to exit so the running bundle releases
-        // its file locks, (2) swaps /Applications/Fogged.app, (3) strips the
-        // quarantine xattr so Gatekeeper doesn't re-challenge, (4) relaunches.
-        // Doing rm+cp in-process fails with EPERM because Fogged is still
-        // holding open fds on its own Mach-O binary.
-        final zipPath = '/tmp/Fogged-Update.zip';
-        final extractDir = '/tmp/Fogged-Update';
-        await File(zipPath).writeAsBytes(bytes);
-        setState(() => _status = 'Extracting...');
-
-        // Clean old extract dir
-        if (await Directory(extractDir).exists()) await Directory(extractDir).delete(recursive: true);
-        await Directory(extractDir).create();
-
-        // Unzip silently
-        final unzip = await Process.run('unzip', ['-o', '-q', zipPath, '-d', extractDir]);
-        if (unzip.exitCode == 0) {
-          // Find the .app inside (safe: no shell invocation)
-          String? appPath;
-          await for (final entity in Directory(extractDir).list(recursive: true)) {
-            if (entity is Directory && entity.path.endsWith('.app')) {
-              appPath = entity.path;
-              break;
-            }
-          }
-          if (appPath != null && appPath.isNotEmpty) {
-            // Mark this version as installed so we don't re-prompt on relaunch.
-            final p = await SharedPreferences.getInstance();
-            await p.setString('update_installed_version', widget.version);
-            setState(() => _status = 'Updating...');
-
-            final myPid = pid;
-            final updaterScript = '${Directory.systemTemp.path}/fogged-updater-${DateTime.now().millisecondsSinceEpoch}.sh';
-            // Shell-quote the extracted app path so spaces don't break cp.
-            final quotedNewApp = "'${appPath.replaceAll("'", "'\\''")}'";
-            await File(updaterScript).writeAsString(
-              '#!/bin/bash\n'
-              '# Fogged macOS updater — runs detached after parent exit.\n'
-              'set +e\n'
-              '# 1. Wait for the running Fogged process to exit (bounded, 30s).\n'
-              'for _ in \$(seq 1 60); do\n'
-              '  if ! kill -0 $myPid 2>/dev/null; then break; fi\n'
-              '  sleep 0.5\n'
-              'done\n'
-              '# Extra belt-and-braces: kill any stragglers named Fogged.\n'
-              'while pgrep -x "Fogged" > /dev/null 2>&1; do sleep 0.5; done\n'
-              'sleep 1\n'
-              '# 2. Swap the bundle. rm may partial-fail if user has another\n'
-              '#    copy open — cp handles that by overwriting what it can.\n'
-              'rm -rf "/Applications/Fogged.app"\n'
-              'cp -R $quotedNewApp "/Applications/Fogged.app"\n'
-              'if [ ! -d "/Applications/Fogged.app" ]; then\n'
-              '  # Install path not writable (user installed to ~/Applications?\n'
-              '  # or is on a read-only volume). Fall back to ~/Applications.\n'
-              '  mkdir -p "\$HOME/Applications"\n'
-              '  cp -R $quotedNewApp "\$HOME/Applications/Fogged.app"\n'
-              '  APP_TARGET="\$HOME/Applications/Fogged.app"\n'
-              'else\n'
-              '  APP_TARGET="/Applications/Fogged.app"\n'
-              'fi\n'
-              '# 3. Strip quarantine so Gatekeeper doesn\'t re-challenge.\n'
-              'xattr -rd com.apple.quarantine "\$APP_TARGET" 2>/dev/null || true\n'
-              '# 4. Relaunch.\n'
-              'open "\$APP_TARGET"\n'
-              '# 5. Cleanup.\n'
-              'rm -f "$zipPath"\n'
-              'rm -rf "$extractDir"\n'
-              'rm -f "\$0"\n'
-            );
-            await Process.run('chmod', ['+x', updaterScript]);
-            // Detach so the script survives us.
-            await Process.start(updaterScript, [], mode: ProcessStartMode.detached);
-            await Future.delayed(const Duration(milliseconds: 500));
-            exit(0);
-          }
-        }
-        // Cleanup on failure (couldn't find .app in zip, or unzip failed)
-        try { await File(zipPath).delete(); } catch (_) {}
-        try { await Directory(extractDir).delete(recursive: true); } catch (_) {}
-        setState(() => _status = 'Install failed — download ok, extraction empty');
-      } else if (Platform.isWindows) {
-        final exePath = '${Platform.environment['TEMP']}\\Fogged-Setup.exe';
-        await File(exePath).writeAsBytes(bytes);
-        setState(() => _status = 'Running installer...');
-        final result = await Process.run(exePath, ['/S']);
-        // Only mark as installed if installer succeeded
-        if (result.exitCode == 0) {
-          final p = await SharedPreferences.getInstance();
-          await p.setString('update_installed_version', widget.version);
-        }
-        await Future.delayed(const Duration(seconds: 2));
-        exit(0);
-      } else if (Platform.isAndroid) {
-        // Save APK and trigger Android package installer
-        final dir = Directory('/storage/emulated/0/Download');
-        final apkPath = '${dir.path}/Fogged-Update.apk';
-        await File(apkPath).writeAsBytes(bytes);
-        setState(() => _status = 'Opening installer...');
-        final p = await SharedPreferences.getInstance();
-        await p.setString('update_installed_version', widget.version);
-        // Use platform channel to trigger install intent
-        const channel = MethodChannel('com.fogged.vpn/android');
-        await channel.invokeMethod('installApk', apkPath);
-      }
-    } catch (e) {
-      setState(() { _downloading = false; _status = 'Error: $e'; });
-    }
-  }
-}
-
-/// Dialog-style error popup matching `_UpdateDialog` look. Shows a compact
-/// summary, with Copy / Send Report / Close actions. "Send Report" forwards
-/// the full error + last 50 log lines to the support endpoint so it lands
-/// in the bot's admin chat for diagnosis. Disabled if user isn't logged in
-/// (no UUID), since the support endpoint is per-user.
-class _ErrorDialog extends StatefulWidget {
-  final String summary;
-  final String fullMessage;
-  final String recentLogs;
-  final String appVersion;
-  final String platform;
-  final String uuid;
-  final String apiBase;
-  const _ErrorDialog({
-    required this.summary,
-    required this.fullMessage,
-    required this.recentLogs,
-    required this.appVersion,
-    required this.platform,
-    required this.uuid,
-    required this.apiBase,
-  });
-
-  @override
-  State<_ErrorDialog> createState() => _ErrorDialogState();
-}
-
-class _ErrorDialogState extends State<_ErrorDialog> {
-  String _reportStatus = '';
-  bool _reporting = false;
-
-  String _buildReportPayload() {
-    return 'ERROR REPORT\n'
-        '─────────────\n'
-        'App: Fogged v${widget.appVersion} (${widget.platform})\n'
-        'UUID: ${widget.uuid.isEmpty ? "(not logged in)" : widget.uuid}\n'
-        '─────────────\n'
-        'Error:\n${widget.fullMessage}\n'
-        '─────────────\n'
-        'Recent logs:\n${widget.recentLogs}';
-  }
-
-  Future<void> _copy() async {
-    await Clipboard.setData(ClipboardData(text: _buildReportPayload()));
-    if (mounted) setState(() => _reportStatus = 'Copied to clipboard');
-  }
-
-  Future<void> _sendReport() async {
-    if (widget.uuid.isEmpty) {
-      setState(() => _reportStatus = 'Log in first to send reports');
-      return;
-    }
-    setState(() { _reporting = true; _reportStatus = 'Sending…'; });
-    try {
-      final resp = await http.post(
-        Uri.parse('${widget.apiBase}/support/create'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'uuid': widget.uuid, 'message': _buildReportPayload()}),
-      ).timeout(const Duration(seconds: 15));
-      if (mounted) {
-        setState(() {
-          _reporting = false;
-          _reportStatus = resp.statusCode == 200
-              ? 'Sent to admin ✓'
-              : 'Send failed (${resp.statusCode})';
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() { _reporting = false; _reportStatus = 'Send failed: $e'; });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: const Color(0xFF0A0A0A),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
-      ),
-      child: Container(
-        width: 360, padding: const EdgeInsets.all(20),
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          Row(children: [
-            Icon(Icons.error_outline, color: Colors.red.shade300, size: 22),
-            const SizedBox(width: 8),
-            const Text('Error', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w800, letterSpacing: 1)),
-          ]),
-          const SizedBox(height: 14),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-            ),
-            child: SelectableText(
-              widget.summary,
-              style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 12, height: 1.45),
-            ),
-          ),
-          if (_reportStatus.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Text(_reportStatus, style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11)),
-          ],
-          const SizedBox(height: 16),
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            GestureDetector(
-              onTap: _copy,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.1)), borderRadius: BorderRadius.circular(8)),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.copy, size: 13, color: Colors.white.withValues(alpha: 0.5)),
-                  const SizedBox(width: 6),
-                  Text('Copy', style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12)),
-                ]),
-              ),
-            ),
-            GestureDetector(
-              onTap: _reporting ? null : _sendReport,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.1)), borderRadius: BorderRadius.circular(8)),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  if (_reporting)
-                    const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.white))
-                  else
-                    Icon(Icons.send, size: 13, color: Colors.white.withValues(alpha: 0.5)),
-                  const SizedBox(width: 6),
-                  Text('Send Report', style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12)),
-                ]),
-              ),
-            ),
-            GestureDetector(
-              onTap: () => Navigator.pop(context),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-                child: const Text('Close', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
-              ),
-            ),
-          ]),
-        ]),
-      ),
-    );
-  }
-}
-
-class _GridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final p = Paint()..color = Colors.white.withValues(alpha: 0.02)..strokeWidth = 0.5;
-    for (double x = 0; x < size.width; x += 60) canvas.drawLine(Offset(x, 0), Offset(x, size.height), p);
-    for (double y = 0; y < size.height; y += 60) canvas.drawLine(Offset(0, y), Offset(size.width, y), p);
-  }
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-// ── Settings Screen ──
-
-class _SettingsScreen extends StatefulWidget {
-  final String accountNumber, subStatus, subEndsAt, daysLeft, referralCode, userRole, uuid, apiBase, protocol, server, mode, subTier;
-  final double referralEarnings;
-  final int totalReferrals;
-  final int deviceLimit;
-  final int? devicesUsed;
-  final List<String> debugLogs;
-  final VoidCallback onLogout;
-  final bool whitelistMode;
-  final ValueChanged<bool> onWhitelistChanged;
-  final List<String> splitDomains;
-  final ValueChanged<List<String>> onSplitDomainsChanged;
-  final bool awaitingCaptcha;
-
-  const _SettingsScreen({
-    required this.accountNumber, required this.subStatus, required this.subEndsAt,
-    required this.daysLeft, required this.referralCode, required this.referralEarnings,
-    required this.totalReferrals, required this.userRole, required this.uuid,
-    required this.apiBase, required this.debugLogs, required this.protocol,
-    required this.server, required this.mode, required this.onLogout,
-    required this.whitelistMode, required this.onWhitelistChanged,
-    required this.splitDomains, required this.onSplitDomainsChanged,
-    required this.awaitingCaptcha,
-    required this.deviceLimit, required this.devicesUsed, required this.subTier,
-  });
-
-  @override
-  State<_SettingsScreen> createState() => _SettingsScreenState();
-}
-
-class _SettingsScreenState extends State<_SettingsScreen> {
-  final _supportCtl = TextEditingController();
-  final _domainCtl = TextEditingController();
-  bool _includeDebug = true;
-  bool _sending = false;
-  bool _autoStart = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadSystemPrefs();
-  }
-
-  Future<void> _loadSystemPrefs() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _autoStart = prefs.getBool('auto_start') ?? false;
-    });
-  }
-
-  void _addSplitDomain() {
-    final domain = _domainCtl.text.trim().toLowerCase();
-    if (domain.isEmpty || !domain.contains('.')) return;
-    if (!widget.splitDomains.contains(domain)) {
-      widget.onSplitDomainsChanged([...widget.splitDomains, domain]);
-    }
-    _domainCtl.clear();
-  }
-
-  Future<void> _setAutoStart(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('auto_start', enabled);
-    setState(() => _autoStart = enabled);
-
-    if (Platform.isMacOS) {
-      final plistPath = '${Platform.environment['HOME']}/Library/LaunchAgents/net.fogged.vpn.plist';
-      if (enabled) {
-        final appPath = Platform.resolvedExecutable;
-        final plist = '''<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>net.fogged.vpn</string>
-  <key>ProgramArguments</key><array><string>$appPath</string></array>
-  <key>RunAtLoad</key><true/>
-</dict>
-</plist>''';
-        await File(plistPath).writeAsString(plist);
-      } else {
-        try { await File(plistPath).delete(); } catch (_) {}
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final refLink = 'https://t.me/foggedvpnbot?start=${widget.referralCode}';
-    return Container(
-      color: const Color(0xFF0D0D0D),
-      child: SingleChildScrollView(padding: const EdgeInsets.all(20), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Header
-          Text(L.tr('settings'), style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: 2)),
-          const SizedBox(height: 24),
-
-          // Account section
-          _sectionTitle(L.tr('account')),
-          _card([
-            _infoRow(L.tr('account'), widget.accountNumber.isEmpty ? '--' : widget.accountNumber),
-            if (widget.subTier.isNotEmpty) _infoRow('Tier', widget.subTier),
-            _infoRow('Status', widget.subStatus.isEmpty ? '--' : widget.subStatus),
-            _infoRow(L.tr('subscription'), widget.daysLeft == '?' ? '--' : '${widget.daysLeft} ${L.tr('days_left')}'),
-            if (widget.subEndsAt.isNotEmpty) _infoRow(L.tr('expired'), widget.subEndsAt.split('T').first),
-            if (widget.deviceLimit > 0) _infoRow(
-              'Devices',
-              widget.devicesUsed == null
-                ? '—  /  ${widget.deviceLimit}'
-                : '${widget.devicesUsed}  /  ${widget.deviceLimit}',
-            ),
-          ]),
-          const SizedBox(height: 8),
-          SizedBox(width: double.infinity, height: 40, child: ElevatedButton(
-            onPressed: () => launchUrl(Uri.parse('https://t.me/foggedvpnbot'), mode: LaunchMode.externalApplication),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.white.withValues(alpha: 0.08), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-            child: Text(L.tr('subscribe'), style: const TextStyle(fontSize: 13, letterSpacing: 1)),
-          )),
-          const SizedBox(height: 20),
-
-          // Referral section
-          _sectionTitle(L.tr('referrals')),
-          _card([
-            _infoRow(L.tr('referral_link'), widget.referralCode.isEmpty ? '--' : widget.referralCode),
-            _infoRow(L.tr('referrals'), '${widget.totalReferrals}'),
-            _infoRow(L.tr('earnings'), '\$${widget.referralEarnings.toStringAsFixed(2)}'),
-          ]),
-          const SizedBox(height: 8),
-          GestureDetector(
-            onTap: () { Clipboard.setData(ClipboardData(text: refLink)); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied'))); },
-            child: Container(
-              width: double.infinity, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.white.withValues(alpha: 0.1))),
-              child: Row(children: [
-                Expanded(child: Text(refLink, style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11), overflow: TextOverflow.ellipsis)),
-                const SizedBox(width: 8),
-                Icon(Icons.copy, size: 14, color: Colors.white.withValues(alpha: 0.3)),
-              ]),
-            ),
-          ),
-          const SizedBox(height: 20),
-
-          // Whitelist mode (Russia)
-          _sectionTitle('Whitelist Mode'),
-          Container(
-            decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white.withValues(alpha: 0.08))),
-            child: Column(children: [
-              SwitchListTile(
-                value: widget.whitelistMode,
-                onChanged: widget.onWhitelistChanged,
-                title: const Text('Bypass whitelisted sites', style: TextStyle(color: Colors.white, fontSize: 13)),
-                subtitle: Text(L.tr('whitelist_bypass_subtitle'), style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
-                activeColor: Colors.white,
-                inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
-              ),
-              if (widget.whitelistMode) Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(L.tr('whitelist_bypass_list_label'),
-                      style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1)),
-                  const SizedBox(height: 6),
-                  Text(L.tr('whitelist_bypass_list_preview'),
-                      style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 11, height: 1.5)),
-                ]),
-              ),
-            ]),
-          ),
-          const SizedBox(height: 20),
-
-          // Captcha banner — surfaces when vk-turn-client needs manual captcha.
-          // Shown regardless of which server the user picked (whitelist servers spawn vk-turn-client).
-          if (widget.awaitingCaptcha && !Platform.isAndroid) ...[
-            Container(
-              margin: const EdgeInsets.only(bottom: 20),
-              decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.orange.withValues(alpha: 0.3))),
-              child: GestureDetector(
-                onTap: () => launchUrl(Uri.parse('http://127.0.0.1:8765'), mode: LaunchMode.externalApplication),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(children: [
-                    Icon(Icons.warning_amber, color: Colors.orange, size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text('VK is asking for a captcha. Tap here to solve in browser.',
-                      style: TextStyle(color: Colors.orange.shade300, fontSize: 12))),
-                  ]),
-                ),
-              ),
-            ),
-          ],
-
-          // Split tunnel (custom bypass domains)
-          _sectionTitle(L.tr('split_tunnel')),
-          Container(
-            decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white.withValues(alpha: 0.08))),
-            padding: const EdgeInsets.all(12),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(L.tr('domain_routing'), style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11)),
-              const SizedBox(height: 8),
-              Row(children: [
-                Expanded(child: TextField(
-                  controller: _domainCtl, style: const TextStyle(color: Colors.white, fontSize: 12),
-                  decoration: InputDecoration(
-                    hintText: 'example.com', hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.15)),
-                    isDense: true, contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    filled: true, fillColor: Colors.white.withValues(alpha: 0.05),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none)),
-                  onSubmitted: (_) => _addSplitDomain(),
-                )),
-                const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: _addSplitDomain,
-                  child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
-                    child: Text(L.tr('add_domain'), style: const TextStyle(color: Colors.white, fontSize: 11))),
-                ),
-              ]),
-              if (widget.splitDomains.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                ...widget.splitDomains.map((d) => Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Row(children: [
-                    Text(d, style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 12)),
-                    const Spacer(),
-                    GestureDetector(
-                      onTap: () { final updated = List<String>.from(widget.splitDomains)..remove(d); widget.onSplitDomainsChanged(updated); },
-                      child: Icon(Icons.close, size: 14, color: Colors.white.withValues(alpha: 0.3))),
-                  ]),
-                )),
-              ],
-            ]),
-          ),
-          const SizedBox(height: 20),
-
-          // Auto-start + Kill switch
-          _sectionTitle('System'),
-          Container(
-            decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white.withValues(alpha: 0.08))),
-            child: Column(children: [
-              SwitchListTile(
-                value: _autoStart,
-                onChanged: Platform.isMacOS ? (v) => _setAutoStart(v) : null,
-                title: Text('Auto-start on boot', style: TextStyle(color: Colors.white.withValues(alpha: Platform.isMacOS ? 1.0 : 0.3), fontSize: 13)),
-                subtitle: Text(Platform.isMacOS ? 'Launch Fogged when you log in' : 'macOS only', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
-                activeColor: Colors.white,
-                inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
-              ),
-            ]),
-          ),
-          const SizedBox(height: 20),
-
-          // Support section
-          _sectionTitle(L.tr('support')),
-          TextField(
-            controller: _supportCtl, maxLines: 3,
-            style: const TextStyle(color: Colors.white, fontSize: 13),
-            decoration: InputDecoration(
-              hintText: L.tr('report_hint'), hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.2)),
-              filled: true, fillColor: Colors.white.withValues(alpha: 0.05),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
-              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(children: [
-            Checkbox(
-              value: _includeDebug,
-              onChanged: (v) => setState(() => _includeDebug = v ?? false),
-              fillColor: WidgetStateProperty.all(Colors.white.withValues(alpha: 0.1)),
-              checkColor: Colors.white,
-              side: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
-            ),
-            Text(L.tr('include_debug'), style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
-            const Spacer(),
-            SizedBox(height: 36, child: ElevatedButton(
-              onPressed: _sending ? null : _sendSupport,
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.white.withValues(alpha: 0.08), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-              child: _sending
-                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : Text(L.tr('send_report'), style: const TextStyle(fontSize: 12)),
-            )),
-          ]),
-          const SizedBox(height: 24),
-
-          // Language
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            for (final entry in [('en', 'EN'), ('ru', 'RU'), ('zh', 'ZH')]) Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: GestureDetector(
-                onTap: () async {
-                  L.setLang(entry.$1);
-                  final prefs = await SharedPreferences.getInstance();
-                  await prefs.setString('lang', entry.$1);
-                  setState(() {});
-                },
-                child: Text(entry.$2, style: TextStyle(fontSize: 13, fontWeight: L.lang == entry.$1 ? FontWeight.bold : FontWeight.normal, color: L.lang == entry.$1 ? Colors.white : Colors.white30)),
-              ),
-            ),
-          ]),
-          const SizedBox(height: 16),
-
-          // Legal links
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            GestureDetector(
-              onTap: () => launchUrl(Uri.parse('https://fogged.net/privacy-policy.html'), mode: LaunchMode.externalApplication),
-              child: Text(L.tr('privacy_policy'), style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.3), decoration: TextDecoration.underline, decorationColor: Colors.white.withValues(alpha: 0.2))),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Text('|', style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.15))),
-            ),
-            GestureDetector(
-              onTap: () => launchUrl(Uri.parse('https://fogged.net/user-agreement.html'), mode: LaunchMode.externalApplication),
-              child: Text(L.tr('terms_of_service'), style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.3), decoration: TextDecoration.underline, decorationColor: Colors.white.withValues(alpha: 0.2))),
-            ),
-          ]),
-          const SizedBox(height: 16),
-
-          // Check for updates / repair button
-          Center(child: SizedBox(width: double.infinity, height: 36, child: ElevatedButton.icon(
-            onPressed: () async {
-              try {
-                // Clear all update flags — forces re-check even if previously marked installed
-                final p = await SharedPreferences.getInstance();
-                await p.remove('update_dismissed_at');
-                await p.remove('update_installed_version');
-                await p.remove('update_skipped_version');
-
-                final resp = await http.get(Uri.parse('${widget.apiBase}/version')).timeout(const Duration(seconds: 10));
-                if (resp.statusCode == 200) {
-                  final j = jsonDecode(resp.body);
-                  final latest = j['version'] as String? ?? '';
-                  final info = await PackageInfo.fromPlatform();
-                  final ap = latest.split('.').map((s) => int.tryParse(s) ?? 0).toList();
-                  final bp = info.version.split('.').map((s) => int.tryParse(s) ?? 0).toList();
-                  while (ap.length < 3) ap.add(0);
-                  while (bp.length < 3) bp.add(0);
-                  final isNewer = ap[0] > bp[0] || (ap[0] == bp[0] && ap[1] > bp[1]) || (ap[0] == bp[0] && ap[1] == bp[1] && ap[2] > bp[2]);
-                  if (!isNewer || latest.isEmpty) {
-                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('v${info.version} — ${L.tr('up_to_date')}')));
-                  } else {
-                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('v$latest ${L.tr('available')} — ${L.tr('restart_to_update')}')));
-                  }
-                }
-              } catch (_) {
-                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(L.tr('update_check_failed'))));
-              }
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.white.withValues(alpha: 0.06), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-            icon: Icon(Icons.refresh, size: 14, color: Colors.white.withValues(alpha: 0.5)),
-            label: Text(L.tr('check_updates'), style: const TextStyle(fontSize: 12, letterSpacing: 0.5)),
-          ))),
-          const SizedBox(height: 16),
-
-          Center(child: GestureDetector(
-            onTap: widget.onLogout,
-            child: Text(L.tr('logout'), style: TextStyle(fontSize: 12, color: Colors.red.shade300)),
-          )),
-          const SizedBox(height: 30),
-        ])),
-    );
-  }
-
-  Future<void> _sendSupport() async {
-    final text = _supportCtl.text.trim();
-    if (text.isEmpty) return;
-    setState(() => _sending = true);
-    try {
-      var body = text;
-      if (_includeDebug) {
-        body += '\n\n--- Debug Info ---\n'
-            'Platform: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}\n'
-            'Protocol: ${widget.protocol}\n'
-            'Server: ${widget.server}\n'
-            'Region: ${widget.mode}\n'
-            'Account: ${widget.accountNumber}\n'
-            'Sub expires: ${widget.subEndsAt.split('T').first}\n'
-            'Last logs:\n${widget.debugLogs.reversed.take(20).join('\n')}';
-      }
-      await http.post(Uri.parse('${widget.apiBase}/support/create'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'uuid': widget.uuid, 'message': body})).timeout(const Duration(seconds: 10));
-      _supportCtl.clear();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(L.tr('report_sent'))));
-        setState(() => _sending = false);
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
-        setState(() => _sending = false);
-      }
-    }
-  }
-
-  Widget _sectionTitle(String t) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
-    child: Text(t, style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1)),
-  );
-
-  Widget _card(List<Widget> children) => Container(
-    decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white.withValues(alpha: 0.08))),
-    child: Column(children: children),
-  );
-
-  Widget _infoRow(String label, String value) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-    child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-      Text(label, style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 13)),
-      Text(value, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
-    ]),
-  );
 }
