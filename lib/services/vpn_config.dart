@@ -20,13 +20,13 @@ String generateXrayConfig(VpnServer srv, String uuid, int socksPort) {
   final pbk = srv.params['pbk'] ?? '';
   final sid = srv.params['sid'] ?? '';
   final sni = srv.params['sni'] ?? 'cdn.jsdelivr.net';
-  // The OV/ТЕСТ server explicitly emits `flow=""` because OrcaX VLESS
-  // doesn't speak Vision yet. Xray's parser rejects an empty `"flow":""`
-  // string ("flow doesn't support 'none'"), so omit the field entirely
-  // when the server didn't request a flow. params['flow'] is null when
-  // missing from the URL, "" when present-but-empty.
-  final flowParam = srv.params['flow'];
-  final flow = flowParam ?? 'xtls-rprx-vision';
+  // The URL is authoritative. If `flow=` is missing (OV/ТЕСТ strips it
+  // server-side because it doesn't speak Vision), the client must not
+  // default to Vision — that wraps the post-VLESS stream with padding
+  // OV reads as garbage and silently drops. Match what 3rd-party
+  // clients (v2raytun, Karing) do: omit the flow field unless the URL
+  // explicitly named one.
+  final flow = srv.params['flow'] ?? '';
   final fp = srv.params['fp'] ?? 'random';
   final user = <String, dynamic>{"id": uuid, "encryption": "none"};
   if (flow.isNotEmpty) user["flow"] = flow;
@@ -67,16 +67,22 @@ String generateSingBoxConfig(VpnServer srv, String uuid, int socksPort, {void Fu
     final sid = srv.params['sid'] ?? '';
     final sni = srv.params['sni'] ?? 'cdn.jsdelivr.net';
     final fp = srv.params['fp'] ?? 'random';
-    final flowParam = srv.params['flow'];
-    final flow = flowParam ?? 'xtls-rprx-vision';
+    // The URL is authoritative. If `flow=` is missing, the server doesn't
+    // want Vision — that's the case for ТЕСТ/OV which doesn't speak
+    // xtls-rprx-vision. Defaulting to vision when the URL was silent
+    // sent Vision padding to OV which it read as garbage and silently
+    // dropped — same reason xray hit "VLESS users: 'flow' doesn't
+    // support 'none'" before our v1.6.9 fix. v2raytun and Karing parse
+    // the URL the same way and don't add Vision when absent — matching
+    // their behavior is the only way our connection looks identical to
+    // theirs on the wire.
+    final flow = srv.params['flow'] ?? '';
     outbound = {
       'type': 'vless',
       'tag': 'proxy',
       'server': ip,
       'server_port': int.tryParse(firstPort) ?? 8443,
       'uuid': uuid,
-      // OV/ТЕСТ explicitly empties flow (no Vision); sing-box accepts the
-      // omitted-when-empty pattern just like our v1.6.9 xray fix.
       if (flow.isNotEmpty) 'flow': flow,
       'tls': {
         'enabled': true,
