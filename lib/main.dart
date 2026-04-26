@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.6'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.7'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1784,35 +1784,51 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       setState(() { _fullTestProgress = i + 1; _fullTestResults[i]['status'] = 'testing'; });
 
       final combo = combos[i];
-      // Set protocol and server, connect, test, disconnect
       _protocol = combo['protocol']!;
       _server = combo['server']!;
 
+      // Wrap the whole combo in a wall-clock budget so a hung connect (e.g.
+      // a server reachable only from inside RU) can't stall the rest of the
+      // queue. 25s = up to ~6s connect/wait + 15s curl + headroom. Status
+      // ALWAYS lands on done|failed so the row never displays "--" stuck on
+      // 'testing' state.
       try {
-        await _startProxy();
-        // Wait for connection
-        await Future.delayed(const Duration(seconds: 4));
-        if (!_connected) { setState(() { _fullTestResults[i]['status'] = 'failed'; }); continue; }
-
-        // Run speed test via curl
-        final result = await Process.run('curl', [
-          '-x', 'socks5h://127.0.0.1:1080', '-so', Platform.isWindows ? 'NUL' : '/dev/null',
-          '-w', '%{speed_download}|%{time_starttransfer}',
-          '-r', '0-26214399', 'https://hel1-speed.hetzner.com/100MB.bin', '--max-time', '15',
-        ]);
-        final parts = result.stdout.toString().split('|');
-        if (parts.length >= 2) {
+        await Future(() async {
+          await _startProxy();
+          await Future.delayed(const Duration(seconds: 4));
+          if (!_connected) throw 'no_listener';
+          // Quick upstream probe — _connected only means SOCKS port is up,
+          // not that the tunnel actually carries traffic. 4s timeout on a
+          // tiny 204-byte fetch flushes out dead-upstream cases fast.
+          final probe = await Process.run('curl', [
+            '-x', 'socks5h://127.0.0.1:1080', '-so', Platform.isWindows ? 'NUL' : '/dev/null',
+            '-w', '%{http_code}',
+            'https://www.gstatic.com/generate_204', '--max-time', '4',
+          ]);
+          if (probe.exitCode != 0) throw 'probe_failed';
+          final result = await Process.run('curl', [
+            '-x', 'socks5h://127.0.0.1:1080', '-so', Platform.isWindows ? 'NUL' : '/dev/null',
+            '-w', '%{speed_download}|%{time_starttransfer}',
+            '-r', '0-26214399', 'https://hel1-speed.hetzner.com/100MB.bin', '--max-time', '15',
+          ]);
+          final parts = result.stdout.toString().split('|');
+          if (parts.length < 2) throw 'curl_no_output';
           final speedBps = double.tryParse(parts[0]) ?? 0;
           final ttfb = double.tryParse(parts[1]) ?? 0;
           final mbps = (speedBps * 8) / 1000000;
+          if (mbps <= 0) throw 'zero_throughput';
           setState(() {
             _fullTestResults[i]['speed'] = mbps;
             _fullTestResults[i]['latency'] = (ttfb * 1000).round();
             _fullTestResults[i]['status'] = 'done';
           });
-        }
-      } catch (_) {
-        setState(() { _fullTestResults[i]['status'] = 'failed'; });
+        }).timeout(const Duration(seconds: 25));
+      } catch (e) {
+        if (mounted) setState(() {
+          _fullTestResults[i]['status'] = 'failed';
+          _fullTestResults[i]['error'] = e.toString();
+        });
+        _addLog('speed: ${combo['protocol']}/${combo['server']} failed — $e');
       }
 
       await _disconnect();
