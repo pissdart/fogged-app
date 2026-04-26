@@ -20,15 +20,23 @@ String generateXrayConfig(VpnServer srv, String uuid, int socksPort) {
   final pbk = srv.params['pbk'] ?? '';
   final sid = srv.params['sid'] ?? '';
   final sni = srv.params['sni'] ?? 'cdn.jsdelivr.net';
-  final flow = srv.params['flow'] ?? 'xtls-rprx-vision';
+  // The OV/ТЕСТ server explicitly emits `flow=""` because OrcaX VLESS
+  // doesn't speak Vision yet. Xray's parser rejects an empty `"flow":""`
+  // string ("flow doesn't support 'none'"), so omit the field entirely
+  // when the server didn't request a flow. params['flow'] is null when
+  // missing from the URL, "" when present-but-empty.
+  final flowParam = srv.params['flow'];
+  final flow = flowParam ?? 'xtls-rprx-vision';
   final fp = srv.params['fp'] ?? 'random';
+  final user = <String, dynamic>{"id": uuid, "encryption": "none"};
+  if (flow.isNotEmpty) user["flow"] = flow;
   return jsonEncode({
     "log": {"loglevel": "warning"},
     "inbounds": [{"tag": "socks", "protocol": "socks", "listen": "127.0.0.1", "port": socksPort,
       "settings": {"auth": "noauth", "udp": true}}],
     "outbounds": [{"tag": "proxy", "protocol": "vless", "settings": {
       "vnext": [{"address": ip, "port": int.tryParse(port) ?? 8443,
-        "users": [{"id": uuid, "encryption": "none", "flow": flow}]}]},
+        "users": [user]}]},
       "streamSettings": {"network": "tcp", "security": "reality",
         "realitySettings": {"serverName": sni, "fingerprint": fp,
           "publicKey": pbk, "shortId": sid}}}]

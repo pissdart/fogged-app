@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.8'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.9'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1176,6 +1176,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           await Future.delayed(const Duration(seconds: 2));
           if (mounted && _connecting) await _startProxy();
         } else {
+          // Proxy died before we ever connected (xray rejected the config,
+          // immediate fail, etc). Kill the shim too — otherwise it keeps
+          // holding 127.0.0.1:1080 and the next Connect press hits
+          // "shim bind: Address already in use".
+          _shimProcess?.kill();
+          _shimProcess = null;
+          _blackoutProcess?.kill();
+          _blackoutProcess = null;
           await _disableVpnRouting();
           if (mounted) setState(() { _connected = false; _connecting = false; });
         }
@@ -1678,26 +1686,68 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           // Full test results table
           if (_fullTestResults.isNotEmpty) ...[
             const SizedBox(height: 16),
+            // Action row: Copy + Send to dev (shown only after the run finishes).
+            if (!_fullTesting) Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(children: [
+                GestureDetector(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: _formatSpeedReport()));
+                    _showMsg(L.tr('copied'));
+                  },
+                  child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.15)), borderRadius: BorderRadius.circular(6)),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.copy, size: 12, color: Colors.white.withValues(alpha: 0.6)),
+                      const SizedBox(width: 4),
+                      Text(L.tr('copy'), style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 11)),
+                    ])),
+                ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: _sendSpeedReportToDev,
+                  child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.15)), borderRadius: BorderRadius.circular(6)),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.send, size: 12, color: Colors.white.withValues(alpha: 0.6)),
+                      const SizedBox(width: 4),
+                      Text(L.tr('send_to_dev'), style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 11)),
+                    ])),
+                ),
+              ]),
+            ),
             Expanded(child: ListView.builder(
               itemCount: _fullTestResults.length,
               itemBuilder: (_, i) {
                 final r = _fullTestResults[i];
                 final isBest = i == 0 && !_fullTesting && r['speed'] != null;
+                final failed = !_fullTesting && r['status'] == 'failed';
+                final sni = (r['sni'] as String?) ?? '';
                 return Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
-                    color: isBest ? Colors.green.withValues(alpha: 0.08) : Colors.white.withValues(alpha: 0.02),
+                    color: isBest ? Colors.green.withValues(alpha: 0.08)
+                        : failed ? Colors.red.withValues(alpha: 0.05)
+                        : Colors.white.withValues(alpha: 0.02),
                     border: Border(bottom: BorderSide(color: Colors.white.withValues(alpha: 0.05)))),
                   child: Row(children: [
                     if (isBest) Padding(padding: const EdgeInsets.only(right: 6),
                       child: Icon(Icons.star, size: 12, color: Colors.green.shade300)),
+                    if (failed) Padding(padding: const EdgeInsets.only(right: 6),
+                      child: Icon(Icons.error_outline, size: 12, color: Colors.red.shade300)),
                     Expanded(flex: 3, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text(r['protocol'] ?? '', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
                       Text(r['server'] ?? '', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 10)),
+                      if (sni.isNotEmpty) Text('sni: $sni', style: TextStyle(color: Colors.white.withValues(alpha: 0.25), fontSize: 9, fontFamily: 'Menlo')),
                     ])),
                     Expanded(flex: 2, child: Text(
-                      r['speed'] != null ? '${(r['speed'] as double).toStringAsFixed(1)} Mbps' : r['status'] == 'testing' ? '...' : '--',
-                      style: TextStyle(color: r['speed'] != null ? Colors.white : Colors.white30, fontSize: 12, fontWeight: FontWeight.w600),
+                      r['speed'] != null ? '${(r['speed'] as double).toStringAsFixed(1)} Mbps'
+                        : r['status'] == 'testing' ? '...'
+                        : failed ? L.tr('failed')
+                        : '--',
+                      style: TextStyle(
+                        color: r['speed'] != null ? Colors.white : failed ? Colors.red.shade300 : Colors.white30,
+                        fontSize: 12, fontWeight: FontWeight.w600),
                       textAlign: TextAlign.right)),
                     const SizedBox(width: 8),
                     SizedBox(width: 50, child: Text(
@@ -1766,7 +1816,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           : _servers.where((s) => s.protocol == 'orcax'))
           .where((s) => s.params['transport'] != 'vkturn');
       for (final srv in servers) {
-        combos.add({'protocol': proto, 'server': srv.name, 'addr': srv.addr});
+        combos.add({
+          'protocol': proto,
+          'server': srv.name,
+          'addr': srv.addr,
+          'sni': srv.params['sni'] ?? '',
+        });
       }
     }
     if (combos.isEmpty) return;
@@ -1777,7 +1832,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       _fullTesting = true;
       _fullTestProgress = 0;
       _fullTestTotal = combos.length;
-      _fullTestResults = combos.map((c) => <String, dynamic>{'protocol': c['protocol'], 'server': c['server'], 'speed': null, 'latency': null, 'status': 'pending'}).toList();
+      _fullTestResults = combos.map((c) => <String, dynamic>{
+        'protocol': c['protocol'],
+        'server': c['server'],
+        'sni': c['sni'],
+        'speed': null,
+        'latency': null,
+        'status': 'pending',
+      }).toList();
     });
 
     for (int i = 0; i < combos.length; i++) {
@@ -1844,6 +1906,39 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
     // Run SNI test too
     _runSniTest();
+  }
+
+  /// Format the full-speed-test results as a plain-text block users can paste
+  /// or attach to a support request. Includes failures + the SNI per row so
+  /// the dev side can spot which SNIs are degraded for that user's path.
+  String _formatSpeedReport() {
+    final buf = StringBuffer();
+    buf.writeln('Fogged Speed Report');
+    buf.writeln('app: $_appVersion ${Platform.operatingSystem}');
+    buf.writeln('region: $_mode  uuid: $_uuid');
+    buf.writeln('date: ${DateTime.now().toIso8601String()}');
+    buf.writeln('---');
+    for (final r in _fullTestResults) {
+      final speed = r['speed'] != null ? '${(r['speed'] as double).toStringAsFixed(1)} Mbps' : '—';
+      final lat = r['latency'] != null ? '${r['latency']}ms' : '—';
+      final status = r['status'] ?? '?';
+      final err = r['error'] != null ? '  err=${r['error']}' : '';
+      final sni = (r['sni'] as String?) ?? '';
+      buf.writeln('[${r['protocol']}] ${r['server']}');
+      buf.writeln('  status=$status  speed=$speed  ttfb=$lat  sni=$sni$err');
+    }
+    return buf.toString();
+  }
+
+  Future<void> _sendSpeedReportToDev() async {
+    try {
+      await http.post(Uri.parse('$_apiBase/support/create'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'uuid': _uuid, 'message': _formatSpeedReport()})).timeout(const Duration(seconds: 10));
+      _showMsg(L.tr('report_sent'));
+    } catch (e) {
+      _showMsg('Error: $e');
+    }
   }
 
   Future<void> _reportSpeedTests() async {
