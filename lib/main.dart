@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.3'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.4'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -447,7 +447,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       if (resp.statusCode != 200) return;
       final j = jsonDecode(resp.body);
       final latest = j['version'] as String? ?? _appVersion;
-      final notes = j['notes'] as String? ?? 'Improvements and bug fixes.';
+      // Server may emit per-language notes (notes_en/ru/zh). Pick the user's
+      // chosen language; fall back to the legacy single `notes` field on
+      // older deployments or empty translation slots.
+      final localized = j['notes_${L.lang}'] as String?;
+      final notes = (localized != null && localized.isNotEmpty)
+          ? localized
+          : (j['notes'] as String? ?? 'Improvements and bug fixes.');
       // Only update if server version is strictly NEWER
       if (!_isNewer(latest, _appVersion) || latest == skippedVersion || latest == installedVersion) return;
 
