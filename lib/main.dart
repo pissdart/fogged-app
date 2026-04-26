@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.4'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.5'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1608,7 +1608,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         Row(children: [
           Text(L.tr('speed_test'), style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: 2)),
           const Spacer(),
-          if (!_fullTesting && _connected) GestureDetector(
+          if (!_fullTesting) GestureDetector(
             onTap: _runFullSpeedTest,
             child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
@@ -1621,7 +1621,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
         if (!_connected && _fullTestResults.isEmpty)
           Center(child: Padding(padding: const EdgeInsets.only(top: 60),
-            child: Text(L.tr('connect_first'), style: TextStyle(color: Colors.white.withValues(alpha: 0.2), fontSize: 14))))
+            child: Text(L.tr('tap_test_all_hint'), style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 13), textAlign: TextAlign.center)))
         else ...[
           // Quick test (current protocol+server)
           if (_connected) GestureDetector(
@@ -1716,14 +1716,22 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   Future<void> _runFullSpeedTest() async {
-    if (_fullTesting || !_connected) return;
+    if (_fullTesting) return;
+    if (_servers.isEmpty) { _showError(L.tr('no_servers_yet') ); return; }
 
-    // Build list of all protocol+server combos
+    // Build list of all protocol+server combos.
+    // Whitelist (transport=vkturn) servers are intentionally excluded —
+    // they're for blackout-mode fallback where the connection takes
+    // 30-60s through VK voice infrastructure and requires re-doing the
+    // VK auth + captcha for each test, which VK rate-limits as bot
+    // activity after the first run. Speed isn't the right benchmark for
+    // them anyway (connectivity is).
     final combos = <Map<String, String>>[];
     for (final proto in _protocols) {
-      final servers = proto == 'VLESS+Reality' ? _servers.where((s) => s.protocol == 'vless')
+      final servers = (proto == 'VLESS+Reality' ? _servers.where((s) => s.protocol == 'vless')
           : proto == 'Hysteria2' ? _servers.where((s) => s.protocol == 'hysteria2')
-          : _servers.where((s) => s.protocol == 'orcax');
+          : _servers.where((s) => s.protocol == 'orcax'))
+          .where((s) => s.params['transport'] != 'vkturn');
       for (final srv in servers) {
         combos.add({'protocol': proto, 'server': srv.name, 'addr': srv.addr});
       }
