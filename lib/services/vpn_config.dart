@@ -46,7 +46,18 @@ String generateXrayConfig(VpnServer srv, String uuid, int socksPort) {
 String generateHy2Config(VpnServer srv, String uuid, int socksPort, {void Function(String)? onWarning}) {
   final parts = srv.addr.split(':');
   final ip = parts[0];
-  final port = parts.length > 1 ? parts[1] : '20000-50000';
+  // Match what sing-box (the underlying engine in Karing/Hiddify/v2raytun)
+  // actually does on the wire when consuming a hysteria2:// URL with a
+  // port range: connect to a single port for the whole session, ignore
+  // the per-packet hopping that apernet/hysteria does by default.
+  // apernet/hysteria's port-hopping orphans response packets on macOS's
+  // stateful UDP NAT (each new dest-port looks like a new flow) so the
+  // client never sees the server's reply — Pro Max single-port :9446
+  // works fine from the same machine, confirming UDP egress is healthy.
+  // Server URL still advertises the full range so a future hopping-aware
+  // client could opt in.
+  final portRange = parts.length > 1 ? parts[1] : '20000-50000';
+  final port = portRange.contains('-') ? portRange.split('-').first : portRange;
   final obfs = srv.params['obfs-password'] ?? srv.params['obfs'] ?? '';
   // Server's masquerade.proxy.url is bing.com — without an explicit SNI on
   // the client, hysteria sent the literal IP as TLS server_name, which RKN
