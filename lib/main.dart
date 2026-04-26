@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.5'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.6'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -434,17 +434,36 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     } catch (e) { debugPrint('Settings sync: $e'); }
   }
 
-  Future<void> _checkForUpdate() async {
+  /// Auto-update check at app launch. Silent unless an update is available.
+  /// Respects the 24h dismissed-at window and the skipped-version flag.
+  Future<void> _checkForUpdate() => _runUpdateCheck(forceShow: false);
+
+  /// Manual update check from settings. Always shows a popup matching the
+  /// update-dialog style — either the install prompt, the up-to-date status,
+  /// or an error. Replaces the previous bottom-bar SnackBars.
+  Future<void> _checkForUpdateForced() => _runUpdateCheck(forceShow: true);
+
+  Future<void> _runUpdateCheck({required bool forceShow}) async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (forceShow) {
+        // User explicitly asked — clear all dismissal flags so a previously
+        // skipped/snoozed version still surfaces.
+        await prefs.remove('update_dismissed_at');
+        await prefs.remove('update_installed_version');
+        await prefs.remove('update_skipped_version');
+      }
       final lastDismissed = prefs.getInt('update_dismissed_at') ?? 0;
       final skippedVersion = prefs.getString('update_skipped_version') ?? '';
       final installedVersion = prefs.getString('update_installed_version') ?? '';
       final now = DateTime.now().millisecondsSinceEpoch;
-      if (now - lastDismissed < 86400000) return;
+      if (!forceShow && now - lastDismissed < 86400000) return;
 
       final resp = await http.get(Uri.parse('$_apiBase/version')).timeout(const Duration(seconds: 10));
-      if (resp.statusCode != 200) return;
+      if (resp.statusCode != 200) {
+        if (forceShow && mounted) _showStatus(L.tr('update_check_failed'), '');
+        return;
+      }
       final j = jsonDecode(resp.body);
       final latest = j['version'] as String? ?? _appVersion;
       // Server may emit per-language notes (notes_en/ru/zh). Pick the user's
@@ -454,8 +473,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       final notes = (localized != null && localized.isNotEmpty)
           ? localized
           : (j['notes'] as String? ?? 'Improvements and bug fixes.');
-      // Only update if server version is strictly NEWER
-      if (!_isNewer(latest, _appVersion) || latest == skippedVersion || latest == installedVersion) return;
+      final hasUpdate = _isNewer(latest, _appVersion) && latest != skippedVersion && latest != installedVersion;
+
+      if (!hasUpdate) {
+        if (forceShow && mounted) _showStatus('v$_appVersion', L.tr('up_to_date'));
+        return;
+      }
 
       final downloadUrl = Platform.isMacOS ? (j['download_macos'] as String? ?? '')
           : Platform.isWindows ? (j['download_windows'] as String? ?? '')
@@ -476,7 +499,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           await p.setInt('update_dismissed_at', DateTime.now().millisecondsSinceEpoch);
         }),
       );
-    } catch (e) { debugPrint('Update check: $e'); }
+    } catch (e) {
+      debugPrint('Update check: $e');
+      if (forceShow && mounted) _showStatus(L.tr('update_check_failed'), '');
+    }
+  }
+
+  void _showStatus(String title, String body) {
+    showDialog(context: context, barrierDismissible: true, builder: (ctx) =>
+      _UpdateStatusDialog(title: title, body: body, onClose: () => Navigator.pop(ctx)),
+    );
   }
 
   /// Compare semver: returns true if a > b
@@ -1588,6 +1620,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       deviceLimit: _deviceLimit,
       devicesUsed: _devicesUsed,
       subTier: _subTier,
+      onCheckForUpdates: _checkForUpdateForced,
       onRefreshSubscription: () async {
         // User-triggered "I think my servers are stale" — re-probe the
         // API endpoint chain (in case dl.fogged.net is RKN-blocked on

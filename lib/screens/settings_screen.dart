@@ -20,6 +20,10 @@ class _SettingsScreen extends StatefulWidget {
   final ValueChanged<bool> onDomainBypassChanged;
   final List<String> splitDomains;
   final ValueChanged<List<String>> onSplitDomainsChanged;
+  /// Triggered by the "Check for updates" button. Always shows a popup —
+  /// the update prompt itself if newer is available, or an "up-to-date" /
+  /// error status dialog matching the update-prompt's visual style.
+  final Future<void> Function() onCheckForUpdates;
   /// Re-probe API endpoints + re-fetch the subscription. User-triggered
   /// equivalent of "delete and re-add the profile" from third-party
   /// clients — needed when the cached server list went stale (RKN
@@ -36,6 +40,7 @@ class _SettingsScreen extends StatefulWidget {
     required this.domainBypass, required this.onDomainBypassChanged,
     required this.splitDomains, required this.onSplitDomainsChanged,
     required this.deviceLimit, required this.devicesUsed, required this.subTier,
+    required this.onCheckForUpdates,
     required this.onRefreshSubscription,
   });
 
@@ -406,36 +411,10 @@ Terminal=false
           ]),
           const SizedBox(height: 16),
 
-          // Check for updates / repair button
+          // Check for updates / repair button. Result rendered as a popup
+          // matching the update-dialog visual style (handled in main.dart).
           Center(child: SizedBox(width: double.infinity, height: 36, child: ElevatedButton.icon(
-            onPressed: () async {
-              try {
-                // Clear all update flags — forces re-check even if previously marked installed
-                final p = await SharedPreferences.getInstance();
-                await p.remove('update_dismissed_at');
-                await p.remove('update_installed_version');
-                await p.remove('update_skipped_version');
-
-                final resp = await http.get(Uri.parse('${widget.apiBase}/version')).timeout(const Duration(seconds: 10));
-                if (resp.statusCode == 200) {
-                  final j = jsonDecode(resp.body);
-                  final latest = j['version'] as String? ?? '';
-                  final info = await PackageInfo.fromPlatform();
-                  final ap = latest.split('.').map((s) => int.tryParse(s) ?? 0).toList();
-                  final bp = info.version.split('.').map((s) => int.tryParse(s) ?? 0).toList();
-                  while (ap.length < 3) ap.add(0);
-                  while (bp.length < 3) bp.add(0);
-                  final isNewer = ap[0] > bp[0] || (ap[0] == bp[0] && ap[1] > bp[1]) || (ap[0] == bp[0] && ap[1] == bp[1] && ap[2] > bp[2]);
-                  if (!isNewer || latest.isEmpty) {
-                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('v${info.version} — ${L.tr('up_to_date')}')));
-                  } else {
-                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('v$latest ${L.tr('available')} — ${L.tr('restart_to_update')}')));
-                  }
-                }
-              } catch (_) {
-                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(L.tr('update_check_failed'))));
-              }
-            },
+            onPressed: widget.onCheckForUpdates,
             style: ElevatedButton.styleFrom(backgroundColor: Colors.white.withValues(alpha: 0.06), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
             icon: Icon(Icons.refresh, size: 14, color: Colors.white.withValues(alpha: 0.5)),
             label: Text(L.tr('check_updates'), style: const TextStyle(fontSize: 12, letterSpacing: 0.5)),

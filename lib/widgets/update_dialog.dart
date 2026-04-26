@@ -6,6 +6,45 @@ part of '../main.dart';
 // the APK to the system package installer. See main.dart for the trigger
 // path (update-check in _HomeScreenState).
 
+/// Status popup shown when the user manually clicks "Check for updates"
+/// and there's nothing newer to install (or the check failed). Visual
+/// style matches _UpdateDialog so the manual + auto flows feel unified.
+class _UpdateStatusDialog extends StatelessWidget {
+  final String title;
+  final String body;
+  final VoidCallback onClose;
+  const _UpdateStatusDialog({required this.title, required this.body, required this.onClose});
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: const Color(0xFF0A0A0A),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
+      child: Container(
+        width: 340, padding: const EdgeInsets.all(20),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Image.asset('assets/logo.png', width: 36, height: 36),
+          const SizedBox(height: 10),
+          Text(title, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: 2)),
+          if (body.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(body, textAlign: TextAlign.center, style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 11, height: 1.4)),
+          ],
+          const SizedBox(height: 16),
+          GestureDetector(
+            onTap: onClose,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
+              decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.1)), borderRadius: BorderRadius.circular(8)),
+              child: Text(L.tr('close'), style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
 class _UpdateDialog extends StatefulWidget {
   final String version, notes, downloadUrl, expectedHash;
   final VoidCallback onSkip, onLater;
@@ -50,7 +89,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
                   decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.1)), borderRadius: BorderRadius.circular(8)),
-                  child: Text('Later', style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
+                  child: Text(L.tr('close'), style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
                 ),
               ),
               const SizedBox(width: 10),
@@ -59,7 +98,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
                   decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-                  child: const Text('Update', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                  child: Text(L.tr('restart'), style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
                 ),
               ),
             ]),

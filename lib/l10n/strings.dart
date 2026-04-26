@@ -46,6 +46,7 @@ class L {
       'device_limit_body': 'You\'ve reached your plan\'s device limit. Sign out on another device, or upgrade your plan to add more.',
       'device_limit_upgrade': 'Upgrade plan',
       'close': 'Close',
+      'restart': 'Restart',
       // Domain-bypass (was called "whitelist_bypass" in v1.6.0 UI strings,
       // which collided with the VK-TURN "Whitelist" server name and
       // confused users + support. It's NOT VK-TURN — it's just
@@ -156,6 +157,7 @@ class L {
       'device_limit_body': 'Достигнут лимит устройств на вашем тарифе. Выйдите на другом устройстве или перейдите на более высокий тариф.',
       'device_limit_upgrade': 'Перейти на тариф выше',
       'close': 'Закрыть',
+      'restart': 'Перезапустить',
       'domain_bypass_section': 'Российские приложения мимо VPN',
       'domain_bypass_toggle': 'Российские приложения в обход VPN',
       'domain_bypass_subtitle': 'Банки, Госуслуги, ВК, Яндекс идут мимо VPN (быстрее + не триггерит ложное определение VPN)',
@@ -260,6 +262,7 @@ class L {
       'device_limit_body': '您已达到当前套餐的设备上限。请在其他设备上退出登录，或升级套餐以添加更多设备。',
       'device_limit_upgrade': '升级套餐',
       'close': '关闭',
+      'restart': '重启',
       'domain_bypass_section': '俄罗斯应用直连',
       'domain_bypass_toggle': '俄罗斯应用绕过 VPN',
       'domain_bypass_subtitle': '俄罗斯银行、Gosuslugi、VK、Yandex 绕过 VPN（更快且避免被误判为 VPN 用户）',
