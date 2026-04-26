@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.9'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.10'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1692,7 +1692,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               child: Row(children: [
                 GestureDetector(
                   onTap: () {
-                    Clipboard.setData(ClipboardData(text: _formatSpeedReport()));
+                    Clipboard.setData(ClipboardData(text: _formatSpeedReportPublic()));
                     _showMsg(L.tr('copied'));
                   },
                   child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1722,7 +1722,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 final r = _fullTestResults[i];
                 final isBest = i == 0 && !_fullTesting && r['speed'] != null;
                 final failed = !_fullTesting && r['status'] == 'failed';
-                final sni = (r['sni'] as String?) ?? '';
                 return Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
@@ -1738,7 +1737,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     Expanded(flex: 3, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text(r['protocol'] ?? '', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
                       Text(r['server'] ?? '', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 10)),
-                      if (sni.isNotEmpty) Text('sni: $sni', style: TextStyle(color: Colors.white.withValues(alpha: 0.25), fontSize: 9, fontFamily: 'Menlo')),
                     ])),
                     Expanded(flex: 2, child: Text(
                       r['speed'] != null ? '${(r['speed'] as double).toStringAsFixed(1)} Mbps'
@@ -1908,12 +1906,31 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _runSniTest();
   }
 
-  /// Format the full-speed-test results as a plain-text block users can paste
-  /// or attach to a support request. Includes failures + the SNI per row so
-  /// the dev side can spot which SNIs are degraded for that user's path.
-  String _formatSpeedReport() {
+  /// Public-safe speed report for the Copy button. Strips SNIs, internal
+  /// error codes, and UUID — users paste these into chats / Telegram /
+  /// support tickets and we don't want competitors or RKN data-mining the
+  /// SNI rotation list out of leaked screenshots.
+  String _formatSpeedReportPublic() {
     final buf = StringBuffer();
     buf.writeln('Fogged Speed Report');
+    buf.writeln('app: $_appVersion ${Platform.operatingSystem}  region: $_mode');
+    buf.writeln('---');
+    for (final r in _fullTestResults) {
+      final speed = r['speed'] != null ? '${(r['speed'] as double).toStringAsFixed(1)} Mbps' : 'FAILED';
+      final lat = r['latency'] != null ? '  ${r['latency']}ms' : '';
+      buf.writeln('[${r['protocol']}] ${r['server']}');
+      buf.writeln('  $speed$lat');
+    }
+    return buf.toString();
+  }
+
+  /// Internal report posted only to the support endpoint. Includes the
+  /// per-row SNI and the internal error code so the dev side can tell
+  /// which SNI / which failure mode is degraded for this user. Never
+  /// shown in the UI, never copied to clipboard.
+  String _formatSpeedReportInternal() {
+    final buf = StringBuffer();
+    buf.writeln('Fogged Speed Report (internal)');
     buf.writeln('app: $_appVersion ${Platform.operatingSystem}');
     buf.writeln('region: $_mode  uuid: $_uuid');
     buf.writeln('date: ${DateTime.now().toIso8601String()}');
@@ -1934,7 +1951,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     try {
       await http.post(Uri.parse('$_apiBase/support/create'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'uuid': _uuid, 'message': _formatSpeedReport()})).timeout(const Duration(seconds: 10));
+        body: jsonEncode({'uuid': _uuid, 'message': _formatSpeedReportInternal()})).timeout(const Duration(seconds: 10));
       _showMsg(L.tr('report_sent'));
     } catch (e) {
       _showMsg('Error: $e');
