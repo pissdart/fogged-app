@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.14'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.15'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1838,6 +1838,15 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
     if (combos.isEmpty) return;
 
+    // Speed test temporarily disables the orcax-connect domain-bypass shim
+    // so each combo is measured against the raw protocol path (matching how
+    // 3rd-party clients like Karing/Hiddify connect — they have no shim).
+    // The shim's TCP-only SOCKS5 forwarder doesn't carry HY2's UDP-associate
+    // SOCKS5 dance through cleanly, which masks otherwise-working HY2 +
+    // ТЕСТ servers as "probe_failed" in the test even though those same
+    // servers connect fine on mobile / 3rd-party clients.
+    final savedDomainBypass = _domainBypass;
+    _domainBypass = false;
     // Disconnect current, then test each combo
     await _disconnect();
     setState(() {
@@ -1911,6 +1920,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       await Future.delayed(const Duration(milliseconds: 500));
     }
 
+    // Restore the user's domain-bypass setting that we forced off above.
+    _domainBypass = savedDomainBypass;
     // Sort by speed descending
     _fullTestResults.sort((a, b) => ((b['speed'] as double?) ?? 0).compareTo((a['speed'] as double?) ?? 0));
     setState(() => _fullTesting = false);
