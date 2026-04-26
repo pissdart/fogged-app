@@ -184,7 +184,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   int? _devicesUsed; // null when server hasn't reported yet
   String _subTier = '';
 
-  static const _protocols = ['VLESS+Reality', 'Hysteria2'];
+  static const _protocols = ['VLESS+Reality', 'Hysteria2', 'OrcaX Pro Max'];
   static const _apiEndpoints = [
     'https://dl.fogged.net',           // Primary (Cloudflare-fronted)
     'https://fogged-api.anon-dev.workers.dev', // Cloudflare Worker #1
@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.11'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.12'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -802,6 +802,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   List<VpnServer> get _filteredServers {
     if (_protocol == 'VLESS+Reality') return _servers.where((s) => s.protocol == 'vless').toList();
     if (_protocol == 'Hysteria2') return _servers.where((s) => s.protocol == 'hysteria2').toList();
+    if (_protocol.startsWith('OrcaX')) return _servers.where((s) => s.protocol == 'orcax').toList();
     return _servers.where((s) => s.protocol == 'vless').toList();
   }
 
