@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.15'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.16'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1872,23 +1872,27 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
       // Wrap the whole combo in a wall-clock budget so a hung connect (e.g.
       // a server reachable only from inside RU) can't stall the rest of the
-      // queue. 25s = up to ~6s connect/wait + 15s curl + headroom. Status
-      // ALWAYS lands on done|failed so the row never displays "--" stuck on
-      // 'testing' state.
+      // queue. 35s = up to 6s connect/wait + 10s probe + 15s curl + headroom.
+      // Earlier 25s budget with 4s connect-wait wasn't enough for HY2 from
+      // RU paths: the QUIC INITIAL roundtrip + server's HTTP auth callback
+      // to Supabase + reply takes 3-5s real-world (the same Karing-on-RU
+      // flow that "just works" gives hysteria ~10s before its retry/timeout
+      // fires). Status ALWAYS lands on done|failed so the row never displays
+      // "--" stuck on 'testing' state.
       try {
         await Future(() async {
           await _startProxy();
-          await Future.delayed(const Duration(seconds: 4));
+          await Future.delayed(const Duration(seconds: 6));
           if (!_connected) throw 'no_listener';
           // Quick upstream probe — _connected only means the local SOCKS
-          // port is up, not that the tunnel actually carries traffic. 6s
-          // is enough for HY2's UDP auth handshake to settle (4s wasn't —
-          // hysteria printed "client mode" before auth completed and the
-          // probe timed out, falsely marking the server failed).
+          // port is up, not that the tunnel actually carries traffic. 10s
+          // for the 204-byte fetch covers worst-case RU→relay→exit→gstatic
+          // round trips when the QUIC stream's first packet has to nail
+          // a slow path through RKN-throttled UDP.
           final probe = await Process.run('curl', [
             '-x', 'socks5h://127.0.0.1:1080', '-so', Platform.isWindows ? 'NUL' : '/dev/null',
             '-w', '%{http_code}',
-            'https://www.gstatic.com/generate_204', '--max-time', '6',
+            'https://www.gstatic.com/generate_204', '--max-time', '10',
           ]);
           if (probe.exitCode != 0) throw 'probe_failed';
           final result = await Process.run('curl', [
@@ -1907,7 +1911,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             _fullTestResults[i]['latency'] = (ttfb * 1000).round();
             _fullTestResults[i]['status'] = 'done';
           });
-        }).timeout(const Duration(seconds: 25));
+        }).timeout(const Duration(seconds: 35));
       } catch (e) {
         if (mounted) setState(() {
           _fullTestResults[i]['status'] = 'failed';

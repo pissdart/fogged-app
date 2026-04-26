@@ -48,6 +48,11 @@ String generateHy2Config(VpnServer srv, String uuid, int socksPort, {void Functi
   final ip = parts[0];
   final port = parts.length > 1 ? parts[1] : '20000-50000';
   final obfs = srv.params['obfs-password'] ?? srv.params['obfs'] ?? '';
+  // Server's masquerade.proxy.url is bing.com — without an explicit SNI on
+  // the client, hysteria sent the literal IP as TLS server_name, which RKN
+  // DPI flags and stalls the QUIC handshake. /singbox already emits
+  // "server_name":"bing.com"; mirror that here.
+  final sni = srv.params['sni'] ?? 'bing.com';
   if (obfs.isEmpty && onWarning != null) {
     onWarning('WARNING: no obfs password from server, HY2 may fail');
   }
@@ -61,6 +66,7 @@ obfs:
 socks5:
   listen: 127.0.0.1:$socksPort
 tls:
+  sni: $sni
   insecure: true
 ''';
 }
