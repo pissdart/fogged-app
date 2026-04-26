@@ -53,21 +53,42 @@ String generateHy2Config(VpnServer srv, String uuid, int socksPort, {void Functi
   // DPI flags and stalls the QUIC handshake. /singbox already emits
   // "server_name":"bing.com"; mirror that here.
   final sni = srv.params['sni'] ?? 'bing.com';
+  // pinSHA256 is in every hysteria2:// URL we emit. Without using it the
+  // client falls back to `insecure: true` and accepts any cert silently —
+  // when the russia-relay path delivers a different cert than expected the
+  // handshake hangs without a clear error. Pinning gives an explicit
+  // verify-or-fail with the right cert, no silent accept.
+  final pinSha256 = srv.params['pinSHA256'] ?? srv.params['pin_sha256'] ?? '';
   if (obfs.isEmpty && onWarning != null) {
     onWarning('WARNING: no obfs password from server, HY2 may fail');
   }
+  // bandwidth.up/down — without these hysteria's BBR initializes its
+  // congestion window very conservatively and the QUIC INITIAL roundtrip
+  // through the russia-relay UDP NAT times out before BBR widens. Karing's
+  // sing-box defaults these; we have to do the same. Numbers are
+  // advertised-cap, not actual — server ignores values it can't honor.
+  final bandwidthBlock = '''
+bandwidth:
+  up: 100 mbps
+  down: 100 mbps''';
+  final tlsBlock = pinSha256.isEmpty
+      ? '''tls:
+  sni: $sni
+  insecure: true'''
+      : '''tls:
+  sni: $sni
+  pinSHA256: $pinSha256''';
   return '''
 server: $ip:$port
 auth: $uuid
+$bandwidthBlock
 obfs:
   type: salamander
   salamander:
     password: $obfs
 socks5:
   listen: 127.0.0.1:$socksPort
-tls:
-  sni: $sni
-  insecure: true
+$tlsBlock
 ''';
 }
 
