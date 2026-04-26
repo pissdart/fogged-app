@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.6.13'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.6.14'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -809,6 +809,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   // ── Connection ──
 
   Future<void> _disconnect() async {
+    // Flip _connected=false BEFORE killing the proxy so the proxy.exitCode
+    // handler — which races us when kill() resolves the future — sees the
+    // intentional-disconnect state and skips the auto-reconnect branch.
+    // Without this guard, killing in the speed-test loop or a normal user
+    // disconnect spawns a stray _startProxy that fights the next iteration
+    // for 127.0.0.1:1080 ("shim bind: Address already in use").
+    if (mounted) setState(() { _connected = false; _connecting = false; });
     if (Platform.isAndroid) {
       await _androidVpn.invokeMethod('stopVpn');
     } else {
@@ -1864,13 +1871,15 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           await _startProxy();
           await Future.delayed(const Duration(seconds: 4));
           if (!_connected) throw 'no_listener';
-          // Quick upstream probe — _connected only means SOCKS port is up,
-          // not that the tunnel actually carries traffic. 4s timeout on a
-          // tiny 204-byte fetch flushes out dead-upstream cases fast.
+          // Quick upstream probe — _connected only means the local SOCKS
+          // port is up, not that the tunnel actually carries traffic. 6s
+          // is enough for HY2's UDP auth handshake to settle (4s wasn't —
+          // hysteria printed "client mode" before auth completed and the
+          // probe timed out, falsely marking the server failed).
           final probe = await Process.run('curl', [
             '-x', 'socks5h://127.0.0.1:1080', '-so', Platform.isWindows ? 'NUL' : '/dev/null',
             '-w', '%{http_code}',
-            'https://www.gstatic.com/generate_204', '--max-time', '4',
+            'https://www.gstatic.com/generate_204', '--max-time', '6',
           ]);
           if (probe.exitCode != 0) throw 'probe_failed';
           final result = await Process.run('curl', [
