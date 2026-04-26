@@ -169,6 +169,27 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             }
           }
           if (appPath != null && appPath.isNotEmpty) {
+            // Verify the extracted bundle is complete BEFORE replacing the
+            // user's working install. If unzip partially succeeded (a corrupt
+            // ZIP with bad local-header offsets can extract some entries
+            // before erroring on others — exit code 2 doesn't always reach
+            // us when stdout/stderr is muted), copying the partial bundle
+            // over /Applications/Fogged.app leaves the user with a broken
+            // install they can't recover from in-app (next /version check
+            // sees same version, no upgrade prompt). Abort cleanly here so
+            // their existing install is untouched.
+            const required = ['Fogged', 'orcax-connect', 'xray', 'hysteria', 'tun2socks',
+                              'vk-turn-client-darwin-arm64', 'vk-turn-client-darwin-amd64'];
+            final missing = <String>[];
+            for (final bin in required) {
+              if (!await File('$appPath/Contents/MacOS/$bin').exists()) missing.add(bin);
+            }
+            if (missing.isNotEmpty) {
+              try { await File(zipPath).delete(); } catch (_) {}
+              try { await Directory(extractDir).delete(recursive: true); } catch (_) {}
+              setState(() => _status = 'Install aborted — bundle missing: ${missing.join(", ")}');
+              return;
+            }
             // Mark this version as installed so we don't re-prompt on relaunch.
             final p = await SharedPreferences.getInstance();
             await p.setString('update_installed_version', widget.version);
