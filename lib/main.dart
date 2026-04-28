@@ -14,6 +14,7 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 import 'l10n/strings.dart';
 import 'models/vpn_server.dart';
 import 'services/vpn_config.dart';
+import 'services/decoy_traffic.dart';
 
 part 'widgets/update_dialog.dart';
 part 'widgets/error_dialog.dart';
@@ -162,6 +163,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   // Servers from subscription
   List<VpnServer> _servers = [];
 
+  // Decoy traffic generator — runs while tunnel is up, fires jittered
+  // benign requests through the active SOCKS5 proxy so adversaries
+  // doing flow correlation can't fingerprint user activity by byte/
+  // timing patterns. Started in _onConnected, stopped in _disconnect,
+  // paused during the speed test so it doesn't skew measurements.
+  final DecoyTrafficService _decoy = DecoyTrafficService();
+
   // Speed test
   bool _testing = false;
   String _testResult = '';
@@ -221,7 +229,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.7.4'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.7.5'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -844,6 +852,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     // disconnect spawns a stray _startProxy that fights the next iteration
     // for 127.0.0.1:1080 ("shim bind: Address already in use").
     if (mounted) setState(() { _connected = false; _connecting = false; });
+    // Decoy traffic must stop before the proxy goes away — otherwise its
+    // pending curl subprocess hangs trying to dial a port that just
+    // closed, which logs noisy connection-refused errors.
+    _decoy.stop();
     if (Platform.isAndroid) {
       await _androidVpn.invokeMethod('stopVpn');
     } else {
@@ -1239,6 +1251,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _trayChannel.invokeMethod('setConnected', true);
     SharedPreferences.getInstance().then((p) => p.setBool('was_connected', true));
     _startUptimeTimer();
+    // Decoy is paused during the full speed test so it doesn't compete
+    // for tunnel bandwidth while we're measuring the real path. Outside
+    // the test, start it on every successful connect — it's harmless if
+    // it's already running (idempotent).
+    if (!_fullTesting) {
+      _decoy.onLog = (m) => _addLog(m);
+      _decoy.start();
+    }
   }
 
   void _handleOrcaxOutput(String line) {
