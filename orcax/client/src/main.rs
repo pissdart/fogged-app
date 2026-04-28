@@ -150,8 +150,16 @@ async fn connect_and_auth(sa: &str) -> Result<(TlsStream, [u8; 16])> {
     let _ = sock.set_recv_buffer_size(262144);
     let _ = sock.set_send_buffer_size(262144);
 
-    let cfg = rustls::ClientConfig::builder()
+    let mut cfg = rustls::ClientConfig::builder()
         .dangerous().with_custom_certificate_verifier(Arc::new(NV)).with_no_client_auth();
+    // Pro Max-Lite (TCP+TLS) 0-RTT resumption support: cache up to 8
+    // server tickets in memory so a reconnect within the ticket
+    // lifetime skips the full TLS handshake. Within one orcax-connect
+    // process lifetime this lets server-switch toggles or transient
+    // network blips reconnect with 0-RTT. Disk persistence across
+    // process spawns is a follow-up that needs a rustls-fork patch
+    // (Tls13ClientSessionValue isn't `Serialize` upstream).
+    cfg.resumption = rustls::client::Resumption::in_memory_sessions(8);
     let con = tokio_rustls::TlsConnector::from(Arc::new(cfg));
     // Reality SNI — use legitimate Russian domain (matches server Reality config)
     let sni_name = pick_sni();

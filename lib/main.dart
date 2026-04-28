@@ -229,7 +229,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.7.5'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.7.6'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
