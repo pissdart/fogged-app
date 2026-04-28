@@ -42,11 +42,47 @@ async fn bypass_direct(mut c: TcpStream, host: &str, port: u16) -> Result<()> {
 
 type TlsStream = tokio_rustls::client::TlsStream<TcpStream>;
 
-const SNI_POOL: &[&str] = &["ozon.ru", "wildberries.ru", "cdn.jsdelivr.net", "api.vk.com", "lamoda.ru", "rbc.ru", "ria.ru"];
+/// Fallback SNI pool if `--sni-pool` isn't passed. Hardcoded here only
+/// so an orcax-connect invocation without the arg still works (backward
+/// compat with older Fogged app builds). The Fogged app reads the live
+/// pool from Supabase `client_sni_pool` and forwards it via
+/// `--sni-pool=a,b,c,...` — that's the authoritative source and will
+/// pick up pool-rotations without rebuilding the client binary.
+const DEFAULT_SNI_POOL: &[&str] = &[
+    "ozon.ru", "wildberries.ru", "yandex.ru", "api.vk.com",
+    "lamoda.ru", "rbc.ru", "ria.ru",
+];
 
-fn pick_sni() -> &'static str {
+/// Global CLI-chosen SNI pool (set once at startup from `--sni-pool`).
+static SNI_POOL_CELL: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+fn set_sni_pool_from_arg(arg_value: Option<&str>) {
+    let pool: Vec<String> = match arg_value {
+        Some(s) if !s.trim().is_empty() => s
+            .split(',')
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect(),
+        _ => DEFAULT_SNI_POOL.iter().map(|s| s.to_string()).collect(),
+    };
+    // Refuse an empty resulting pool — always fall back to defaults so
+    // we never try to connect with sni="".
+    let pool = if pool.is_empty() {
+        DEFAULT_SNI_POOL.iter().map(|s| s.to_string()).collect()
+    } else {
+        pool
+    };
+    let _ = SNI_POOL_CELL.set(pool);
+}
+
+fn pick_sni() -> String {
     use rand::Rng;
-    SNI_POOL[rand::thread_rng().gen_range(0..SNI_POOL.len())]
+    let pool = SNI_POOL_CELL
+        .get()
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_SNI_POOL.iter().map(|s| s.to_string()).collect());
+    let idx = rand::thread_rng().gen_range(0..pool.len());
+    pool[idx].clone()
 }
 
 fn dlog(msg: &str) {
@@ -127,9 +163,12 @@ async fn connect_and_auth(sa: &str) -> Result<(TlsStream, [u8; 16])> {
     ).await.map_err(|_| anyhow!("TLS timeout"))?.map_err(|e| anyhow!("TLS: {}", e))?;
     dlog("TLS handshake done");
 
-    // OrcaX handshake
-    let pk = spk();
+    // OrcaX handshake. The server's Reality public key is taken from
+    // `--pubkey` (passed by the Fogged app from the subscription URL)
+    // with a compile-time fallback to the current prod server's pubkey
+    // so existing invocations without the arg keep working.
     let args: Vec<String> = std::env::args().collect();
+    let pk = spk(arg(&args, "--pubkey").as_deref());
     let uuid = parse_uuid(&arg(&args, "--uuid").unwrap_or("0804b576-4dfb-424a-80e7-e812e5c13cae".into()));
     let (eph, enc) = orcax_transport::handshake::client_encrypt_uuid(&pk, &uuid);
     let mut a = Vec::with_capacity(32 + enc.len());
@@ -209,6 +248,11 @@ async fn main() {
     let _ = quinn::rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let args: Vec<String> = std::env::args().collect();
+    // Initialize the SNI pool from `--sni-pool=a,b,c,...` (passed by the
+    // Fogged app from Supabase `client_sni_pool`). Omitted → fall back to
+    // hardcoded pool. Rotations on the server now reach clients on next
+    // sub refresh instead of requiring a client-binary rebuild.
+    set_sni_pool_from_arg(arg(&args, "--sni-pool").as_deref());
     let mut sa = arg(&args, "--server").unwrap_or("204.168.171.253:9444".into());
     let sk = arg(&args, "--socks").unwrap_or("127.0.0.1:1080".into());
     let protocol = arg(&args, "--protocol").unwrap_or("tcp".into());
@@ -470,10 +514,32 @@ async fn handle_socks5(mut c: TcpStream, mux: &MuxPool, bu: &Arc<AtomicU64>, tok
     Ok(())
 }
 
-fn spk() -> [u8; 32] {
-    let b = bd("cH5pTMOPPjrQvqzZDGGV-Kq2U29kDBTeBCNvBt0YcWk");
-    let mut p = [0u8; 32]; p.copy_from_slice(&b);
-    x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(p)).to_bytes()
+/// Server-static Reality public key (x25519).
+///
+/// **Pre-2026-04-22 this function embedded the server's PRIVATE key and
+/// derived the public key from it at runtime** — meaning the private key
+/// was shipped to every client install + committed in git. Catastrophic
+/// (any attacker could impersonate the OV server).
+///
+/// Now: the public key can be supplied via `--pubkey` (base64url,
+/// matching the `pubkey=` query param on the subscription's `orcax://`
+/// URL). Hardcoded fallback is the *public* key only — safe to ship.
+fn spk(pubkey_arg: Option<&str>) -> [u8; 32] {
+    // Fallback: the current OV server's PUBLIC key. Safe to embed.
+    const DEFAULT_PUB: &str = "OqtCAsfuBF4DAHLjAyOsHwKNj-jqJQdnsYrElI7la2w";
+    let src = pubkey_arg.unwrap_or(DEFAULT_PUB);
+    let b = bd(src);
+    let mut p = [0u8; 32];
+    if b.len() == 32 {
+        p.copy_from_slice(&b);
+    } else {
+        // Malformed --pubkey arg — fall back to embedded default rather
+        // than silently ship a zeroed key (which would fail auth but
+        // very confusingly).
+        let fb = bd(DEFAULT_PUB);
+        p.copy_from_slice(&fb);
+    }
+    p
 }
 fn bd(s: &str) -> Vec<u8> { use base64::Engine; base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).unwrap_or_default() }
 
@@ -516,7 +582,7 @@ async fn quic_connect_and_auth(endpoint: &quinn::Endpoint, addr: std::net::Socke
     dlog(&format!("QUIC connecting to {}", addr));
     // Randomize SNI per connection from legitimate Russian domains
     let sni = pick_sni();
-    let conn = match endpoint.connect(addr, sni) {
+    let conn = match endpoint.connect(addr, &sni) {
         Ok(c) => match tokio::time::timeout(std::time::Duration::from_secs(10), c).await {
             Ok(Ok(c)) => { dlog("QUIC connected"); c }
             Ok(Err(e)) => { dlog(&format!("QUIC handshake failed: {}", e)); return None; }
@@ -530,7 +596,7 @@ async fn quic_connect_and_auth(endpoint: &quinn::Endpoint, addr: std::net::Socke
         Ok(s) => s,
         Err(e) => { dlog(&format!("auth stream failed: {}", e)); return None; }
     };
-    let pk = spk();
+    let pk = spk(arg(args, "--pubkey").as_deref());
     let uuid = parse_uuid(&arg(args, "--uuid").unwrap_or("0804b576-4dfb-424a-80e7-e812e5c13cae".into()));
     let (eph, enc) = orcax_transport::handshake::client_encrypt_uuid(&pk, &uuid);
     let mut a = Vec::with_capacity(32 + enc.len());
@@ -565,7 +631,12 @@ async fn run_quic_mode(sa: &str, sk: &str, args: &[String], socks_token: &str, e
         // BBR for client (smart probing), server uses Brutal (aggressive sending)
         let mut transport = quinn::TransportConfig::default();
         transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
-        transport.max_idle_timeout(Some(quinn::IdleTimeout::from(quinn::VarInt::from_u32(300_000))));
+        // 15 min idle ceiling matches server (orcax-promax). With a
+        // 15 s client PING while the app is active, alive sessions
+        // never hit idle; the ceiling only bites after the phone has
+        // been fully asleep for >15 min, at which point the health
+        // monitor reconnects transparently on wake.
+        transport.max_idle_timeout(Some(quinn::IdleTimeout::from(quinn::VarInt::from_u32(900_000))));
         transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
         transport.stream_receive_window(quinn::VarInt::from_u32(8_000_000)); // 8MB per stream
         transport.receive_window(quinn::VarInt::from_u32(16_000_000)); // 16MB total

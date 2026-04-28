@@ -4,3 +4,4 @@ pub mod reality_cert;
 pub mod tls_record;
 pub mod server;
 pub mod handshake;
+pub mod vision;

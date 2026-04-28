@@ -221,7 +221,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.7.3'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.7.4'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -1866,6 +1866,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   Future<void> _runFullSpeedTest() async {
     if (_fullTesting) return;
+
+    // Refresh the subscription first so the test always runs against the
+    // current server list. The 5-minute background poller can be up to
+    // 5 minutes stale, and after a server-side port rotation an out-of-date
+    // _servers fails the new entry with `connect: no route to host` even
+    // though the live subscription has already moved to the new port. One
+    // extra HTTP round-trip beats a falsely-failing row that confuses both
+    // user and support. Best-effort: if it fails, fall through to whatever
+    // _servers we already have.
+    if (_uuid.isNotEmpty) {
+      try { await _fetchSubscription(); } catch (_) {}
+    }
+
     if (_servers.isEmpty) { _showError(L.tr('no_servers_yet') ); return; }
 
     // Build list of all protocol+server combos.

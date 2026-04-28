@@ -27,6 +27,17 @@ pub struct HandshakeConfig {
     pub static_key: StaticSecret,
 }
 
+/// Rebuild the 72-byte authenticated-auth message bytes that a client
+/// sent, so callers can key a `ReplayTracker` on them. Exposed so
+/// `orcax-vless` and `orcax-promax` can share identical replay-key
+/// derivation without reimplementing it.
+pub fn auth_message_bytes(client_ephemeral_pub: &[u8; 32], encrypted_payload: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(32 + encrypted_payload.len());
+    buf.extend_from_slice(client_ephemeral_pub);
+    buf.extend_from_slice(encrypted_payload);
+    buf
+}
+
 /// Result of a successful server-side handshake
 pub struct HandshakeResult {
     /// Authenticated UUID string (8-4-4-4-12 format)

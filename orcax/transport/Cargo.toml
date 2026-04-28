@@ -26,6 +26,7 @@ hex = "0.4"
 base64 = "0.22"
 bytes = "1"
 chacha20poly1305 = "0.10"
+thiserror = "1"
 
 # TLS — patched via workspace [patch.crates-io] to use rustls-reality
 rustls = "0.22"
