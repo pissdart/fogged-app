@@ -37,6 +37,75 @@
 //! - **Seed** / PQC additions in the `Addons` protobuf. `Flow` is the
 //!   only field we act on.
 //! - **MuxAndNotXUDP** downgrading. We already reject mux separately.
+//! - **Direct mode cutover**. The `PaddingDirect` command terminates the
+//!   parser (UnpadState.is_direct() returns true) but we don't yet drop
+//!   the outer TLS layer in the relay loop. See "Direct mode rollout
+//!   plan" below.
+//!
+//! ## Direct mode rollout plan (deferred — needs a dedicated session)
+//!
+//! Tonight (2026-04-28) the parser distinguishes End from Direct via
+//! `is_direct()`. The relay-loop integration is the harder half and is
+//! NOT done yet. Documenting the sequence here so the future
+//! implementation isn't mystery work:
+//!
+//! 1. **Server detects `PaddingDirect` on the uplink.** UnpadState
+//!    transitions to `done=true, direct=true`. Any bytes already in
+//!    `out` from that feed call are valid plaintext — forward them.
+//!
+//! 2. **Drain rustls' deframer of buffered ciphertext.** Outer TLS may
+//!    have queued ciphertext bytes that were never decoded into TLS
+//!    records yet. Those bytes ARE outer-TLS-encrypted. Use
+//!    `tls.conn.deframer_take_pending()` (already exposed in our
+//!    rustls-fork) to pull them out, decrypt them via rustls'
+//!    `process_new_packets()` until the deframer is empty, and forward
+//!    that plaintext to upstream. This is the same dance the existing
+//!    kTLS+splice path does at lines ~720-735 of orcax-vless main.rs.
+//!
+//! 3. **Stop using rustls.** From this point on, bytes arriving on the
+//!    socket are RAW inner-TLS records the client's higher-layer TLS
+//!    stack produced — they are NOT outer-TLS-encrypted. Reading them
+//!    through rustls would fail MAC verification (the bug that
+//!    forced the rollback the first time we tried Vision).
+//!
+//! 4. **Switch to raw `splice()` on the underlying fds.** The relay
+//!    loop becomes structurally identical to the non-Vision
+//!    `relay_splice` (kernel pipe, bidirectional, revocation +
+//!    bandwidth checks per tick). Note: kTLS is NOT applicable here
+//!    — kTLS decrypts outer TLS records, but in Direct mode the
+//!    bytes are inner TLS records that the kernel mustn't touch.
+//!    We pass them through opaque-bytes.
+//!
+//! 5. **Server's downlink also switches.** The peer expects raw inner-
+//!    TLS bytes from us too. Server's first downlink frame should
+//!    carry `Command::PaddingDirect` to signal the cutover, then
+//!    server stops outer-TLS-encrypting and writes raw inner-TLS
+//!    bytes (from upstream) directly to the client_fd. PadState
+//!    needs an `into_direct()` method that wraps the first chunk
+//!    with PaddingDirect instead of PaddingEnd.
+//!
+//! 6. **Test against sing-box and xray** — both as client and server.
+//!    The mode-transition is the one place a single off-by-one
+//!    breaks the cipher state irrecoverably; expect 1-2 days of
+//!    debugging per implementation.
+//!
+//! Risks worth flagging:
+//!  - rustls' `deframer_take_pending()` semantics on partial records:
+//!    if the deframer has 5 bytes of a 1024-byte TLS record header,
+//!    those 5 bytes are useless without the rest. Need to verify
+//!    rustls won't return mid-record fragments and we'd need to
+//!    handle that.
+//!  - Multi-thread safety: relay_splice spawns two `std::thread`s for
+//!    bidirectional splice. The Direct cutover happens on the upstream
+//!    thread; the downstream thread needs to be coordinated to switch
+//!    its writer to raw at the same time, otherwise we'd write outer-
+//!    TLS-wrapped bytes mixed with raw bytes during the transition.
+//!  - sing-box's downstream reader may or may not require the server
+//!    to send PaddingDirect first — the original empty-PaddingEnd
+//!    frame I tried sent it into a "download closed: unexpected EOF"
+//!    state. Need to capture the actual wire behaviour against a
+//!    known-working xray server with tcpdump before locking the
+//!    server-side writer behaviour.
 
 use rand::RngCore;
 
@@ -110,6 +179,18 @@ pub struct UnpadState {
     /// Set once we've seen PaddingEnd/Direct — no more framing, pass
     /// every subsequent byte through.
     done: bool,
+    /// Set when the terminating command was specifically `PaddingDirect`
+    /// (`0x02`) rather than `PaddingEnd` (`0x01`). Direct signals to
+    /// the caller that the peer is dropping the outer-TLS layer: the
+    /// next bytes on the wire are the raw inner-TLS records the peer's
+    /// inner stream produces, NOT outer-TLS-encrypted records. Servers
+    /// must respond by tearing down their rustls/Quinn TLS state and
+    /// switching to raw `splice()` on the underlying fd. Without this
+    /// transition the outer cipher state desyncs and every record
+    /// fails MAC verification — the symptom that bit our 2026-04-28
+    /// Vision attempt and forced the rollback. End=false means stay
+    /// inside outer TLS and keep relaying decrypted plaintext.
+    direct: bool,
     /// Buffer that accumulates the first 16 UUID prefix bytes across
     /// arbitrarily-sized `feed()` calls. rustls can hand us as little
     /// as 1 byte at a time, so UUID validation can't assume the whole
@@ -128,6 +209,7 @@ impl UnpadState {
             remaining_padding: -1,
             current_command: 0,
             done: false,
+            direct: false,
             uuid_buf: Vec::with_capacity(16),
             uuid_done: false,
         }
@@ -137,6 +219,14 @@ impl UnpadState {
     /// `PaddingDirect` marker. After this, the caller should bypass
     /// the state machine and splice/copy bytes raw.
     pub fn is_done(&self) -> bool { self.done }
+
+    /// True only when the terminating command was `PaddingDirect`.
+    /// Use this to decide whether to drop the outer TLS layer and
+    /// switch to raw fd splice. With `PaddingEnd` (or before any
+    /// terminator), keep the existing outer-TLS relay path — the
+    /// peer is still wrapping bytes in TLS records, just no longer
+    /// adding Vision padding on top.
+    pub fn is_direct(&self) -> bool { self.direct }
 
     /// Feed wire bytes in, get unwrapped application bytes out.
     /// Writes unwrapped bytes into `out`. Returns `Ok(())` on success,
@@ -212,9 +302,30 @@ impl UnpadState {
                         self.remaining_content = -1;
                         self.remaining_padding = -1;
                     }
-                    Some(Command::PaddingEnd) | Some(Command::PaddingDirect) => {
+                    Some(Command::PaddingEnd) => {
                         self.done = true;
                         // Anything left in this chunk is raw payload.
+                        if i < wire.len() {
+                            out.extend_from_slice(&wire[i..]);
+                        }
+                        return Ok(());
+                    }
+                    Some(Command::PaddingDirect) => {
+                        self.done = true;
+                        self.direct = true;
+                        // Bytes after this marker are raw INNER-TLS,
+                        // not outer-TLS records. The caller MUST stop
+                        // routing them through rustls and forward them
+                        // to the upstream socket as-is — see the
+                        // module-level "Direct mode rollout plan" doc
+                        // for the full transition sequence. Until that
+                        // ships, callers conservatively treat is_direct
+                        // identically to is_done — the peer is also
+                        // sending raw bytes from this point in either
+                        // case, so the decoded payload here is correct
+                        // and the desync only happens on subsequent
+                        // bytes (which the relay loop will mishandle
+                        // until Direct support lands).
                         if i < wire.len() {
                             out.extend_from_slice(&wire[i..]);
                         }
@@ -277,6 +388,39 @@ impl PadState {
             true,
             &self.user_uuid,
             true, // long_padding — hides VLESS response size
+            self.seed,
+        )
+    }
+
+    /// Wrap `payload` as the server-side **Direct cutover signal**. Used
+    /// by `relay_rustls_vision` exactly once, immediately after detecting
+    /// the client's uplink `PaddingDirect`. Emits a Vision frame with
+    /// `Command::PaddingDirect` (0x02) plus the UUID prefix. Sing-box's
+    /// `UnpadState` reads this, sees cmd=0x02, sets `is_direct()=true`
+    /// on its own side and stops outer-TLS-encrypting subsequent bytes
+    /// — both sides now agree to switch to raw inner-TLS over the bare
+    /// TCP socket.
+    ///
+    /// Empty-content (`b""`) is the natural call: the frame is pure
+    /// signal, no payload data needed. Caller is responsible for
+    /// calling `tls.flush()` after writing the returned bytes through
+    /// rustls so the frame leaves the buffer before rustls is dropped.
+    ///
+    /// One-shot like `wrap()` — after this call, `wrap()` becomes a
+    /// pass-through (returns input unchanged). Don't mix the two on the
+    /// same PadState; pick End-mode (call `wrap`) or Direct-mode (call
+    /// `into_direct`) for the lifetime of the session.
+    pub fn into_direct(&mut self, payload: &[u8]) -> Vec<u8> {
+        if self.done {
+            return payload.to_vec();
+        }
+        self.done = true;
+        encode_frame(
+            payload,
+            Command::PaddingDirect,
+            true,
+            &self.user_uuid,
+            true, // long_padding — same hiding behavior as End-mode signal
             self.seed,
         )
     }
@@ -394,6 +538,26 @@ mod tests {
     }
 
     #[test]
+    fn padding_end_does_not_set_direct() {
+        let frame = wrap_first_frame(b"x", Command::PaddingEnd);
+        let mut state = UnpadState::new(U);
+        let mut out = Vec::new();
+        state.feed(&frame, &mut out).unwrap();
+        assert!(state.is_done());
+        assert!(!state.is_direct(), "End must NOT flip direct — outer TLS stays alive");
+    }
+
+    #[test]
+    fn padding_direct_sets_direct() {
+        let frame = wrap_first_frame(b"x", Command::PaddingDirect);
+        let mut state = UnpadState::new(U);
+        let mut out = Vec::new();
+        state.feed(&frame, &mut out).unwrap();
+        assert!(state.is_done());
+        assert!(state.is_direct(), "Direct must flip the cutover flag");
+    }
+
+    #[test]
     fn raw_bytes_after_end_flow_through() {
         let frame = wrap_first_frame(b"first", Command::PaddingEnd);
         let mut concat = frame.clone();
@@ -483,6 +647,65 @@ mod tests {
         assert_eq!(&raw, b"hello world"); // passed through
         unpad.feed(&raw, &mut out).unwrap();
         assert_eq!(&out, b"hello world");
+    }
+
+    #[test]
+    fn pad_state_into_direct_emits_padding_direct_command() {
+        // The Direct cutover frame must carry cmd byte 0x02 (PaddingDirect)
+        // at the right offset (after the 16-byte UUID prefix). UnpadState's
+        // header parser reads byte index 16 as the command.
+        let mut pad = PadState::new(U);
+        let frame = pad.into_direct(b"signal");
+        assert_eq!(frame[..16], U, "UUID prefix expected on first frame");
+        assert_eq!(frame[16], Command::PaddingDirect as u8, "cmd byte must be 0x02 (PaddingDirect)");
+    }
+
+    #[test]
+    fn into_direct_round_trips_through_unpad_state() {
+        // Server's into_direct frame, fed through a peer's UnpadState,
+        // must produce the original payload AND set is_direct()=true.
+        // This is what sing-box's reader will do when our server signal
+        // arrives.
+        let mut pad = PadState::new(U);
+        let mut unpad = UnpadState::new(U);
+        let frame = pad.into_direct(b"hello-direct");
+        let mut out = Vec::new();
+        unpad.feed(&frame, &mut out).unwrap();
+        assert_eq!(&out, b"hello-direct", "payload must round-trip");
+        assert!(unpad.is_done(), "Direct frame terminates state machine");
+        assert!(unpad.is_direct(), "Direct frame must flip is_direct on the peer");
+    }
+
+    #[test]
+    fn into_direct_marks_pad_state_done() {
+        // One-shot semantics: after into_direct, subsequent wrap() / into_direct
+        // calls are pass-through (return input unchanged). Same contract as wrap().
+        let mut pad = PadState::new(U);
+        let _ = pad.into_direct(b"first");
+        assert!(pad.is_done());
+        // Subsequent wrap is pass-through
+        let raw = pad.wrap(b"raw bytes");
+        assert_eq!(&raw, b"raw bytes", "second call must pass through unchanged");
+        // Subsequent into_direct is also pass-through
+        let raw2 = pad.into_direct(b"more raw");
+        assert_eq!(&raw2, b"more raw");
+    }
+
+    #[test]
+    fn into_direct_with_empty_payload_is_pure_signal_frame() {
+        // The server's actual cutover signal carries no data — just UUID +
+        // PaddingDirect command + padding. Verify this is a valid frame
+        // that UnpadState reads cleanly with empty payload output.
+        let mut pad = PadState::new(U);
+        let frame = pad.into_direct(b"");
+        assert!(frame.len() >= 16 + 5, "frame must have at least UUID + 5-byte header");
+        assert_eq!(frame[16], Command::PaddingDirect as u8);
+
+        let mut unpad = UnpadState::new(U);
+        let mut out = Vec::new();
+        unpad.feed(&frame, &mut out).unwrap();
+        assert!(out.is_empty(), "empty signal frame must yield empty plaintext");
+        assert!(unpad.is_direct());
     }
 
     #[test]

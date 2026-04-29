@@ -229,7 +229,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ];
   String _apiBase = _apiEndpoints.first;
   int _apiEndpointIndex = 0;
-  String _appVersion = '1.7.6'; // Updated from PackageInfo at runtime
+  String _appVersion = '1.7.7'; // Updated from PackageInfo at runtime
 
   @override
   void initState() {
@@ -647,8 +647,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     try {
       final servers = <VpnServer>[];
 
-      // 1. Fetch VLESS/CDN from subs endpoint
-      final resp = await http.get(Uri.parse('$_apiBase/subs/$_uuid?mode=$_mode')).timeout(const Duration(seconds: 10));
+      // Universal subscription endpoint. Returns the base64 URL list
+      // for our Dart/* User-Agent (server inspects UA — see
+      // crates/control-plane/fogged-sub/src/client_detection.rs and
+      // routes Dart/Fogged UAs to ClientFamily::FoggedApp →
+      // UrlList format). Bytes are equivalent to the legacy
+      // /subs/<uuid>; the URL list includes vless://, hysteria2://
+      // and orcax:// lines which _parseLine handles uniformly. The
+      // separate /singbox HY2-extraction call we used to make is
+      // gone — redundant with the hysteria2:// lines already in
+      // this response.
+      final resp = await http.get(Uri.parse('$_apiBase/sub/$_uuid?mode=$_mode')).timeout(const Duration(seconds: 10));
       if (resp.statusCode == 200) {
         final decoded = utf8.decode(base64.decode(resp.body.trim()));
         for (final line in decoded.split('\n').where((l) => l.isNotEmpty)) {
@@ -667,24 +676,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         _showError(L.tr('expired'));
       } else {
         _addLog('subscription fetch: HTTP ${resp.statusCode}');
-      }
-
-      // 2. Fetch HY2 from singbox endpoint
-      final sbResp = await http.get(Uri.parse('$_apiBase/singbox/$_uuid?mode=$_mode')).timeout(const Duration(seconds: 10));
-      if (sbResp.statusCode == 200) {
-        try {
-          final j = jsonDecode(sbResp.body);
-          final outbounds = j['outbounds'] as List? ?? [];
-          for (final ob in outbounds) {
-            if (ob['type'] == 'hysteria2') {
-              final name = ob['tag'] as String? ?? 'HY2';
-              final ip = ob['server'] as String? ?? '';
-              final port = ob['server_port'] as int? ?? 20000;
-              final obfs = ob['obfs']?['password'] as String? ?? '';
-              servers.add(VpnServer('hysteria2', name, '$ip:$port', {'obfs-password': obfs}));
-            }
-          }
-        } catch (e) { debugPrint('Singbox parse error: $e'); }
       }
 
       // OrcaX servers come from subscription now — no hardcoded duplicates
@@ -716,29 +707,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         debugPrint('Retrying subscription fetch on new endpoint...');
         try {
           final servers = <VpnServer>[];
-          final resp = await http.get(Uri.parse('$_apiBase/subs/$_uuid?mode=$_mode')).timeout(const Duration(seconds: 10));
+          final resp = await http.get(Uri.parse('$_apiBase/sub/$_uuid?mode=$_mode')).timeout(const Duration(seconds: 10));
           if (resp.statusCode == 200) {
             final decoded = utf8.decode(base64.decode(resp.body.trim()));
             for (final line in decoded.split('\n').where((l) => l.isNotEmpty)) {
               final s = _parseLine(line);
               if (s != null) servers.add(s);
             }
-          }
-          final sbResp = await http.get(Uri.parse('$_apiBase/singbox/$_uuid?mode=$_mode')).timeout(const Duration(seconds: 10));
-          if (sbResp.statusCode == 200) {
-            try {
-              final j = jsonDecode(sbResp.body);
-              final outbounds = j['outbounds'] as List? ?? [];
-              for (final ob in outbounds) {
-                if (ob['type'] == 'hysteria2') {
-                  final name = ob['tag'] as String? ?? 'HY2';
-                  final ip = ob['server'] as String? ?? '';
-                  final port = ob['server_port'] as int? ?? 20000;
-                  final obfs = ob['obfs']?['password'] as String? ?? '';
-                  servers.add(VpnServer('hysteria2', name, '$ip:$port', {'obfs-password': obfs}));
-                }
-              }
-            } catch (e2) { debugPrint('Singbox parse retry: $e2'); }
           }
           if (servers.isNotEmpty) {
             setState(() { _servers = servers; _server = _filteredServers.isNotEmpty ? _filteredServers.first.name : servers.first.name; });
@@ -1435,8 +1410,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
   void _showMsg(String msg) { if (!mounted) return; ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 3))); }
 
-  /// Shown when the server's device-enforcement gate returns 403 on /subs or
-  /// /singbox. Distinct from the "expired" dialog so the user understands it's
+  /// Shown when the server's device-enforcement gate returns 403 on /sub.
+  /// Distinct from the "expired" dialog so the user understands it's
   /// a tier-limit issue, not an expired subscription. Offers @foggedvpn_bot
   /// as the channel to remove a device or upgrade.
   void _showDeviceLimitDialog() {
